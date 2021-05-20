@@ -1,4 +1,16 @@
-// Copyright 2004-present Facebook. All Rights Reserved.
+// Copyright (c) Facebook, Inc. and its affiliates.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #pragma once
 
@@ -11,9 +23,10 @@ namespace rsocket {
 
 /// Implementation of stream stateMachine that represents a RequestResponse
 /// requester
-class RequestResponseRequester : public StreamStateMachineBase,
-                                 public yarpl::single::SingleSubscription,
-                                 public yarpl::enable_get_ref {
+class RequestResponseRequester
+    : public StreamStateMachineBase,
+      public yarpl::single::SingleSubscription,
+      public std::enable_shared_from_this<RequestResponseRequester> {
  public:
   RequestResponseRequester(
       std::shared_ptr<StreamsWriter> writer,
@@ -23,13 +36,17 @@ class RequestResponseRequester : public StreamStateMachineBase,
         initialPayload_(std::move(payload)) {}
 
   void subscribe(
-      yarpl::Reference<yarpl::single::SingleObserver<Payload>> subscriber);
+      std::shared_ptr<yarpl::single::SingleObserver<Payload>> subscriber);
 
  private:
   void cancel() noexcept override;
 
-  void handlePayload(Payload&& payload, bool complete, bool flagsNext) override;
-  void handleError(folly::exception_wrapper errorPayload) override;
+  void handlePayload(
+      Payload&& payload,
+      bool flagsComplete,
+      bool flagsNext,
+      bool flagsFollows) override;
+  void handleError(folly::exception_wrapper ew) override;
 
   void endStream(StreamCompletionSignal signal) override;
 
@@ -40,12 +57,14 @@ class RequestResponseRequester : public StreamStateMachineBase,
     NEW,
     REQUESTED,
     CLOSED,
-  } state_{State::NEW};
+  };
+
+  State state_{State::NEW};
 
   /// The observer that will consume payloads.
-  yarpl::Reference<yarpl::single::SingleObserver<Payload>> consumingSubscriber_;
+  std::shared_ptr<yarpl::single::SingleObserver<Payload>> consumingSubscriber_;
 
   /// Initial payload which has to be sent with 1st request.
   Payload initialPayload_;
 };
-}
+} // namespace rsocket

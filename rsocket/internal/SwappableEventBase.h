@@ -1,9 +1,21 @@
-// Copyright 2004-present Facebook. All Rights Reserved.
+// Copyright (c) Facebook, Inc. and its affiliates.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #pragma once
 
-#include <folly/io/async/EventBase.h>
 #include <folly/Function.h>
+#include <folly/io/async/EventBase.h>
 #include <mutex>
 
 namespace rsocket {
@@ -18,16 +30,16 @@ class SwappableEventBase final {
     // lock for synchronization on destroyed_, and all members of the parent SEB
     std::mutex l_;
     // has the SEB's destructor ran?
-    bool destroyed_ {false};
+    bool destroyed_{false};
   };
 
-public:
+ public:
   using CbFunc = folly::Function<void(folly::EventBase&)>;
 
   explicit SwappableEventBase(folly::EventBase& eb)
-  : eb_(&eb),
-    nextEb_(nullptr),
-    hasSebDtored_(std::make_shared<MutexBoolPair>()) {}
+      : eb_(&eb),
+        nextEb_(nullptr),
+        hasSebDtored_(std::make_shared<MutexBoolPair>()) {}
 
   // Run or enqueue 'cb', in order with all prior calls to runInEventBaseThread
   // If setEventBase has been called, and the prior EventBase is still
@@ -47,7 +59,7 @@ public:
   // there are any pending by the time the SEB is destroyed
   ~SwappableEventBase();
 
-private:
+ private:
   folly::EventBase* eb_;
   folly::EventBase* nextEb_; // also indicate if we're in the middle of a swap
 
@@ -66,5 +78,4 @@ private:
   std::vector<CbFunc> queued_;
 };
 
-
-} /* ns rsocket */
+} // namespace rsocket

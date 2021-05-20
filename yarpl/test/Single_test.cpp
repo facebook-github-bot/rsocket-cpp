@@ -1,4 +1,16 @@
-// Copyright 2004-present Facebook. All Rights Reserved.
+// Copyright (c) Facebook, Inc. and its affiliates.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #include <folly/ExceptionWrapper.h>
 #include <folly/synchronization/Baton.h>
@@ -9,12 +21,10 @@
 #include "yarpl/single/SingleTestObserver.h"
 #include "yarpl/test_utils/Tuple.h"
 
-// TODO can we eliminate need to import both of these?
-using namespace yarpl;
 using namespace yarpl::single;
 
 TEST(Single, SingleOnNext) {
-  auto a = Single<int>::create([](Reference<SingleObserver<int>> obs) {
+  auto a = Single<int>::create([](std::shared_ptr<SingleObserver<int>> obs) {
     obs->onSubscribe(SingleSubscriptions::empty());
     obs->onSuccess(1);
   });
@@ -27,7 +37,7 @@ TEST(Single, SingleOnNext) {
 
 TEST(Single, OnError) {
   std::string errorMessage("DEFAULT->No Error Message");
-  auto a = Single<int>::create([](Reference<SingleObserver<int>> obs) {
+  auto a = Single<int>::create([](std::shared_ptr<SingleObserver<int>> obs) {
     obs->onError(
         folly::exception_wrapper(std::runtime_error("something broke!")));
   });
@@ -58,7 +68,7 @@ TEST(Single, Error) {
 }
 
 TEST(Single, SingleMap) {
-  auto a = Single<int>::create([](Reference<SingleObserver<int>> obs) {
+  auto a = Single<int>::create([](std::shared_ptr<SingleObserver<int>> obs) {
     obs->onSubscribe(SingleSubscriptions::empty());
     obs->onSuccess(1);
   });
@@ -77,7 +87,7 @@ TEST(Single, MapWithException) {
     return n;
   });
 
-  auto observer = yarpl::make_ref<SingleTestObserver<int>>();
+  auto observer = std::make_shared<SingleTestObserver<int>>();
   single->subscribe(observer);
 
   observer->assertOnErrorMessage("Too big!");

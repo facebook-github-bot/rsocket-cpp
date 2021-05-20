@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-
+#
+# Copyright 2004-present Facebook. All Rights Reserved.
+#
 if [ ! -s ./build/frame_fuzzer ]; then
     echo "./build/frame_fuzzer binary not found!"
     exit 1

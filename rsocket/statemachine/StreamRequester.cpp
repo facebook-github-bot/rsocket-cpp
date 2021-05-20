@@ -1,4 +1,16 @@
-// Copyright 2004-present Facebook. All Rights Reserved.
+// Copyright (c) Facebook, Inc. and its affiliates.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #include "rsocket/statemachine/StreamRequester.h"
 
@@ -10,72 +22,66 @@ void StreamRequester::setRequested(size_t n) {
   addImplicitAllowance(n);
 }
 
-void StreamRequester::request(int64_t n) noexcept {
-  if (n == 0) {
+void StreamRequester::request(int64_t signedN) {
+  if (signedN <= 0 || consumerClosed()) {
     return;
   }
 
-  if(!requested_) {
-    requested_ = true;
+  const size_t n = signedN;
 
-    auto initialN =
-        n > Frame_REQUEST_N::kMaxRequestN ? Frame_REQUEST_N::kMaxRequestN : n;
-    auto remainingN = n > Frame_REQUEST_N::kMaxRequestN
-        ? n - Frame_REQUEST_N::kMaxRequestN
-        : 0;
-
-    // Send as much as possible with the initial request.
-    CHECK_GE(Frame_REQUEST_N::kMaxRequestN, initialN);
-
-    // We must inform ConsumerBase about an implicit allowance we have
-    // requested from the remote end.
-    addImplicitAllowance(initialN);
-    newStream(
-        StreamType::STREAM,
-        static_cast<uint32_t>(initialN),
-        std::move(initialPayload_));
-
-    // Pump the remaining allowance into the ConsumerBase _after_ sending the
-    // initial request.
-    if (remainingN) {
-      generateRequest(remainingN);
-    }
-    return;
-  }
-
-  generateRequest(n);
-}
-
-void StreamRequester::cancel() noexcept {
-  VLOG(5) << "StreamRequester::cancel(requested_=" << requested_ << ")";
   if (requested_) {
-    cancelConsumer();
-    cancelStream();
+    generateRequest(n);
+    return;
   }
-  closeStream(StreamCompletionSignal::CANCEL);
+
+  requested_ = true;
+
+  // We must inform ConsumerBase about an implicit allowance we have requested
+  // from the remote end.
+  auto const initial = std::min<uint32_t>(n, kMaxRequestN);
+  addImplicitAllowance(initial);
+  newStream(StreamType::STREAM, initial, std::move(initialPayload_));
+
+  // Pump the remaining allowance into the ConsumerBase _after_ sending the
+  // initial request.
+  if (n > initial) {
+    generateRequest(n - initial);
+  }
 }
 
-void StreamRequester::endStream(StreamCompletionSignal signal) {
-  VLOG(5) << "StreamRequester::endStream()";
-  ConsumerBase::endStream(signal);
+void StreamRequester::cancel() {
+  VLOG(5) << "StreamRequester::cancel(requested_=" << requested_ << ")";
+  if (consumerClosed()) {
+    return;
+  }
+  cancelConsumer();
+  if (requested_) {
+    writeCancel();
+  }
+  removeFromWriter();
 }
 
 void StreamRequester::handlePayload(
     Payload&& payload,
     bool complete,
-    bool next) {
-  CHECK(requested_);
-  processPayload(std::move(payload), next);
+    bool next,
+    bool follows) {
+  if (!requested_) {
+    handleError(std::runtime_error("Haven't sent REQUEST_STREAM yet"));
+    return;
+  }
+  bool finalComplete =
+      processFragmentedPayload(std::move(payload), next, complete, follows);
 
-  if (complete) {
+  if (finalComplete) {
     completeConsumer();
-    closeStream(StreamCompletionSignal::COMPLETE);
+    removeFromWriter();
   }
 }
 
-void StreamRequester::handleError(folly::exception_wrapper errorPayload) {
-  CHECK(requested_);
-  errorConsumer(std::move(errorPayload));
-  closeStream(StreamCompletionSignal::ERROR);
+void StreamRequester::handleError(folly::exception_wrapper ew) {
+  errorConsumer(std::move(ew));
+  removeFromWriter();
 }
-}
+
+} // namespace rsocket

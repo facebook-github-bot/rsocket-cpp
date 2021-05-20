@@ -1,4 +1,16 @@
-// Copyright 2004-present Facebook. All Rights Reserved.
+// Copyright (c) Facebook, Inc. and its affiliates.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #include "rsocket/framing/Frame.h"
 
@@ -11,10 +23,25 @@
 
 namespace rsocket {
 
-const uint32_t Frame_LEASE::kMaxTtl;
-const uint32_t Frame_LEASE::kMaxNumRequests;
-const uint32_t Frame_SETUP::kMaxKeepaliveTime;
-const uint32_t Frame_SETUP::kMaxLifetime;
+namespace detail {
+
+FrameFlags getFlags(const Payload& p) {
+  return p.metadata ? FrameFlags::METADATA : FrameFlags::EMPTY_;
+}
+
+void checkFlags(const Payload& p, FrameFlags flags) {
+  if (bool(p.metadata) != bool(flags & FrameFlags::METADATA)) {
+    throw std::invalid_argument{
+        "Value of METADATA flag doesn't match payload metadata"};
+  }
+}
+
+} // namespace detail
+
+constexpr uint32_t Frame_LEASE::kMaxTtl;
+constexpr uint32_t Frame_LEASE::kMaxNumRequests;
+constexpr uint32_t Frame_SETUP::kMaxKeepaliveTime;
+constexpr uint32_t Frame_SETUP::kMaxLifetime;
 
 std::ostream& operator<<(std::ostream& os, const Frame_REQUEST_Base& frame) {
   return os << frame.header_ << "(" << frame.requestN_ << ", "
@@ -53,54 +80,65 @@ std::ostream& operator<<(std::ostream& os, const Frame_PAYLOAD& frame) {
   return os << frame.header_ << ", " << frame.payload_;
 }
 
-Frame_ERROR Frame_ERROR::invalidSetup(std::string message) {
-  return connectionErr(ErrorCode::INVALID_SETUP, std::move(message));
+Frame_ERROR Frame_ERROR::invalidSetup(folly::StringPiece message) {
+  return connectionErr(ErrorCode::INVALID_SETUP, message);
 }
 
-Frame_ERROR Frame_ERROR::unsupportedSetup(std::string message) {
-  return connectionErr(ErrorCode::UNSUPPORTED_SETUP, std::move(message));
+Frame_ERROR Frame_ERROR::unsupportedSetup(folly::StringPiece message) {
+  return connectionErr(ErrorCode::UNSUPPORTED_SETUP, message);
 }
 
-Frame_ERROR Frame_ERROR::rejectedSetup(std::string message) {
-  return connectionErr(ErrorCode::REJECTED_SETUP, std::move(message));
+Frame_ERROR Frame_ERROR::rejectedSetup(folly::StringPiece message) {
+  return connectionErr(ErrorCode::REJECTED_SETUP, message);
 }
 
-Frame_ERROR Frame_ERROR::rejectedResume(std::string message) {
-  return connectionErr(ErrorCode::REJECTED_RESUME, std::move(message));
+Frame_ERROR Frame_ERROR::rejectedResume(folly::StringPiece message) {
+  return connectionErr(ErrorCode::REJECTED_RESUME, message);
 }
 
-Frame_ERROR Frame_ERROR::connectionError(std::string message) {
-  return connectionErr(ErrorCode::CONNECTION_ERROR, std::move(message));
+Frame_ERROR Frame_ERROR::connectionError(folly::StringPiece message) {
+  return connectionErr(ErrorCode::CONNECTION_ERROR, message);
 }
 
 Frame_ERROR Frame_ERROR::applicationError(
     StreamId stream,
-    std::string message) {
-  return streamErr(ErrorCode::APPLICATION_ERROR, std::move(message), stream);
+    folly::StringPiece message) {
+  return streamErr(ErrorCode::APPLICATION_ERROR, message, stream);
 }
 
-Frame_ERROR Frame_ERROR::rejected(StreamId stream, std::string message) {
-  return streamErr(ErrorCode::REJECTED, std::move(message), stream);
-}
-
-Frame_ERROR Frame_ERROR::canceled(StreamId stream, std::string message) {
-  return streamErr(ErrorCode::CANCELED, std::move(message), stream);
-}
-
-Frame_ERROR Frame_ERROR::invalid(StreamId stream, std::string message) {
-  return streamErr(ErrorCode::INVALID, std::move(message), stream);
-}
-
-Frame_ERROR Frame_ERROR::connectionErr(ErrorCode err, std::string message) {
-  return Frame_ERROR{0, err, Payload{std::move(message)}};
-}
-
-Frame_ERROR
-Frame_ERROR::streamErr(ErrorCode err, std::string message, StreamId stream) {
+Frame_ERROR Frame_ERROR::applicationError(StreamId stream, Payload&& payload) {
   if (stream == 0) {
     throw std::invalid_argument{"Can't make stream error for stream zero"};
   }
-  return Frame_ERROR{stream, err, Payload{std::move(message)}};
+  return Frame_ERROR(stream, ErrorCode::APPLICATION_ERROR, std::move(payload));
+}
+
+Frame_ERROR Frame_ERROR::rejected(StreamId stream, folly::StringPiece message) {
+  return streamErr(ErrorCode::REJECTED, message, stream);
+}
+
+Frame_ERROR Frame_ERROR::canceled(StreamId stream, folly::StringPiece message) {
+  return streamErr(ErrorCode::CANCELED, message, stream);
+}
+
+Frame_ERROR Frame_ERROR::invalid(StreamId stream, folly::StringPiece message) {
+  return streamErr(ErrorCode::INVALID, message, stream);
+}
+
+Frame_ERROR Frame_ERROR::connectionErr(
+    ErrorCode err,
+    folly::StringPiece message) {
+  return Frame_ERROR{0, err, Payload{message}};
+}
+
+Frame_ERROR Frame_ERROR::streamErr(
+    ErrorCode err,
+    folly::StringPiece message,
+    StreamId stream) {
+  if (stream == 0) {
+    throw std::invalid_argument{"Can't make stream error for stream zero"};
+  }
+  return Frame_ERROR{stream, err, Payload{message}};
 }
 
 std::ostream& operator<<(std::ostream& os, const Frame_ERROR& frame) {
@@ -147,33 +185,13 @@ std::ostream& operator<<(std::ostream& os, const Frame_RESUME_OK& frame) {
 }
 
 std::ostream& operator<<(std::ostream& os, const Frame_REQUEST_CHANNEL& frame) {
-  return os << frame.header_ << ", " << frame.payload_;
+  return os << frame.header_ << ", initialRequestN=" << frame.requestN_ << ", "
+            << frame.payload_;
 }
 
 std::ostream& operator<<(std::ostream& os, const Frame_REQUEST_STREAM& frame) {
   return os << frame.header_ << ", initialRequestN=" << frame.requestN_ << ", "
             << frame.payload_;
-}
-
-StreamType getStreamType(FrameType frameType) {
-  if (frameType == FrameType::REQUEST_STREAM) {
-    return StreamType::STREAM;
-  } else if (frameType == FrameType::REQUEST_CHANNEL) {
-    return StreamType::CHANNEL;
-  } else if (frameType == FrameType::REQUEST_RESPONSE) {
-    return StreamType::REQUEST_RESPONSE;
-  } else if (frameType == FrameType::REQUEST_FNF) {
-    return StreamType::FNF;
-  } else {
-    LOG(FATAL) << "Unknown open stream frame : " << frameType;
-  }
-}
-
-bool isNewStreamFrame(FrameType frameType) {
-  return frameType == FrameType::REQUEST_CHANNEL ||
-      frameType == FrameType::REQUEST_STREAM ||
-      frameType == FrameType::REQUEST_RESPONSE ||
-      frameType == FrameType::REQUEST_FNF;
 }
 
 } // namespace rsocket

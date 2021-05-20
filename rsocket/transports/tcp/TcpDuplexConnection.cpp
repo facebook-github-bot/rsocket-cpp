@@ -1,4 +1,16 @@
-// Copyright 2004-present Facebook. All Rights Reserved.
+// Copyright (c) Facebook, Inc. and its affiliates.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #include "rsocket/transports/tcp/TcpDuplexConnection.h"
 
@@ -23,7 +35,7 @@ class TcpReaderWriter : public folly::AsyncTransportWrapper::WriteCallback,
       std::shared_ptr<RSocketStats> stats)
       : socket_(std::move(socket)), stats_(std::move(stats)) {}
 
-  ~TcpReaderWriter() {
+  ~TcpReaderWriter() override {
     CHECK(isClosed());
     DCHECK(!inputSubscriber_);
   }
@@ -32,8 +44,7 @@ class TcpReaderWriter : public folly::AsyncTransportWrapper::WriteCallback,
     return socket_.get();
   }
 
-  void setInput(
-      yarpl::Reference<DuplexConnection::Subscriber> inputSubscriber) {
+  void setInput(std::shared_ptr<DuplexConnection::Subscriber> inputSubscriber) {
     if (inputSubscriber && isClosed()) {
       inputSubscriber->onComplete();
       return;
@@ -99,7 +110,7 @@ class TcpReaderWriter : public folly::AsyncTransportWrapper::WriteCallback,
   void writeErr(
       size_t,
       const folly::AsyncSocketException& exn) noexcept override {
-    closeErr(folly::exception_wrapper{exn});
+    closeErr(folly::exception_wrapper{std::make_exception_ptr(exn), exn});
     intrusive_ptr_release(this);
   }
 
@@ -124,7 +135,7 @@ class TcpReaderWriter : public folly::AsyncTransportWrapper::WriteCallback,
   }
 
   void readErr(const folly::AsyncSocketException& exn) noexcept override {
-    closeErr(exn);
+    closeErr(folly::exception_wrapper{std::make_exception_ptr(exn), exn});
     intrusive_ptr_release(this);
   }
 
@@ -142,7 +153,7 @@ class TcpReaderWriter : public folly::AsyncTransportWrapper::WriteCallback,
   folly::AsyncTransportWrapper::UniquePtr socket_;
   const std::shared_ptr<RSocketStats> stats_;
 
-  yarpl::Reference<DuplexConnection::Subscriber> inputSubscriber_;
+  std::shared_ptr<DuplexConnection::Subscriber> inputSubscriber_;
   int refCount_{0};
 };
 
@@ -213,10 +224,10 @@ void TcpDuplexConnection::send(std::unique_ptr<folly::IOBuf> buf) {
 }
 
 void TcpDuplexConnection::setInput(
-    yarpl::Reference<DuplexConnection::Subscriber> inputSubscriber) {
+    std::shared_ptr<DuplexConnection::Subscriber> inputSubscriber) {
   // we don't care if the subscriber will call request synchronously
   inputSubscriber->onSubscribe(
-      yarpl::make_ref<TcpInputSubscription>(tcpReaderWriter_));
+      std::make_shared<TcpInputSubscription>(tcpReaderWriter_));
   tcpReaderWriter_->setInput(std::move(inputSubscriber));
 }
 } // namespace rsocket

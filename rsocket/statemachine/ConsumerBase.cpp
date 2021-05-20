@@ -1,4 +1,16 @@
-// Copyright 2004-present Facebook. All Rights Reserved.
+// Copyright (c) Facebook, Inc. and its affiliates.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #include "rsocket/statemachine/ConsumerBase.h"
 
@@ -6,29 +18,21 @@
 
 #include <glog/logging.h>
 
-#include "rsocket/Payload.h"
-#include "yarpl/flowable/Subscription.h"
-
 namespace rsocket {
 
-using namespace yarpl;
-using namespace yarpl::flowable;
-
 void ConsumerBase::subscribe(
-    Reference<yarpl::flowable::Subscriber<Payload>> subscriber) {
-  if (isTerminated()) {
-    subscriber->onSubscribe(yarpl::flowable::Subscription::empty());
+    std::shared_ptr<yarpl::flowable::Subscriber<Payload>> subscriber) {
+  if (state_ == State::CLOSED) {
+    subscriber->onSubscribe(yarpl::flowable::Subscription::create());
     subscriber->onComplete();
     return;
   }
 
   DCHECK(!consumingSubscriber_);
   consumingSubscriber_ = std::move(subscriber);
-  consumingSubscriber_->onSubscribe(this->ref_from_this(this));
+  consumingSubscriber_->onSubscribe(shared_from_this());
 }
 
-// TODO: this is probably buggy and misused and not needed (when
-// completeConsumer exists)
 void ConsumerBase::cancelConsumer() {
   state_ = State::CLOSED;
   VLOG(5) << "ConsumerBase::cancelConsumer()";
@@ -48,6 +52,7 @@ void ConsumerBase::generateRequest(size_t n) {
 
 void ConsumerBase::endStream(StreamCompletionSignal signal) {
   VLOG(5) << "ConsumerBase::endStream(" << signal << ")";
+  state_ = State::CLOSED;
   if (auto subscriber = std::move(consumingSubscriber_)) {
     if (signal == StreamCompletionSignal::COMPLETE ||
         signal == StreamCompletionSignal::CANCEL) { // TODO: remove CANCEL
@@ -58,7 +63,6 @@ void ConsumerBase::endStream(StreamCompletionSignal signal) {
       subscriber->onError(StreamInterruptedException(static_cast<int>(signal)));
     }
   }
-  StreamStateMachineBase::endStream(signal);
 }
 
 size_t ConsumerBase::getConsumerAllowance() const {
@@ -66,23 +70,45 @@ size_t ConsumerBase::getConsumerAllowance() const {
 }
 
 void ConsumerBase::processPayload(Payload&& payload, bool onNext) {
-  if (payload || onNext) {
-    // Frames carry application-level payloads are taken into account when
-    // figuring out flow control allowance.
-    if (allowance_.tryConsume(1) && activeRequests_.tryConsume(1)) {
-      sendRequests();
-      if (consumingSubscriber_) {
-        consumingSubscriber_->onNext(std::move(payload));
-      } else {
-        LOG(ERROR)
-            << "consuming subscriber is missing, might be a race condition on "
-               " cancel/onNext.";
-      }
-    } else {
-      handleFlowControlError();
-      return;
-    }
+  if (!payload && !onNext) {
+    return;
   }
+
+  // Frames carrying application-level payloads are taken into account when
+  // figuring out flow control allowance.
+  if (!allowance_.tryConsume(1) || !activeRequests_.tryConsume(1)) {
+    handleFlowControlError();
+    return;
+  }
+
+  sendRequests();
+  if (consumingSubscriber_) {
+    consumingSubscriber_->onNext(std::move(payload));
+  } else {
+    LOG(ERROR) << "Consuming subscriber is missing, might be a race on "
+               << "cancel/onNext";
+  }
+}
+
+bool ConsumerBase::processFragmentedPayload(
+    Payload&& payload,
+    bool flagsNext,
+    bool flagsComplete,
+    bool flagsFollows) {
+  payloadFragments_.addPayload(std::move(payload), flagsNext, flagsComplete);
+
+  if (flagsFollows) {
+    // there will be more fragments to come
+    return false;
+  }
+
+  bool finalFlagsComplete, finalFlagsNext;
+  Payload finalPayload;
+
+  std::tie(finalPayload, finalFlagsNext, finalFlagsComplete) =
+      payloadFragments_.consumePayloadAndFlags();
+  processPayload(std::move(finalPayload), finalFlagsNext);
+  return finalFlagsComplete;
 }
 
 void ConsumerBase::completeConsumer() {
@@ -93,20 +119,18 @@ void ConsumerBase::completeConsumer() {
   }
 }
 
-void ConsumerBase::errorConsumer(folly::exception_wrapper ex) {
+void ConsumerBase::errorConsumer(folly::exception_wrapper ew) {
   state_ = State::CLOSED;
   VLOG(5) << "ConsumerBase::errorConsumer()";
   if (auto subscriber = std::move(consumingSubscriber_)) {
-    subscriber->onError(std::move(ex));
+    subscriber->onError(std::move(ew));
   }
 }
 
 void ConsumerBase::sendRequests() {
-  auto toSync =
-      std::min<size_t>(pendingAllowance_.get(), Frame_REQUEST_N::kMaxRequestN);
+  auto toSync = std::min<size_t>(pendingAllowance_.get(), kMaxRequestN);
   auto actives = activeRequests_.get();
-  if (actives < (toSync + 1) / 2) {
-    toSync = toSync - actives;
+  if (actives <= toSync) {
     toSync = pendingAllowance_.consumeUpTo(toSync);
     if (toSync > 0) {
       writeRequestN(static_cast<uint32_t>(toSync));
@@ -117,8 +141,11 @@ void ConsumerBase::sendRequests() {
 
 void ConsumerBase::handleFlowControlError() {
   if (auto subscriber = std::move(consumingSubscriber_)) {
-    subscriber->onError(std::runtime_error("surplus response"));
+    subscriber->onError(std::runtime_error("Surplus response"));
   }
-  errorStream("flow control error");
+  writeInvalidError("Flow control error");
+  endStream(StreamCompletionSignal::ERROR);
+  removeFromWriter();
 }
+
 } // namespace rsocket

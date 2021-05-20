@@ -1,4 +1,16 @@
-// Copyright 2004-present Facebook. All Rights Reserved.
+// Copyright (c) Facebook, Inc. and its affiliates.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #include <gtest/gtest.h>
 #include <thread>
@@ -73,6 +85,14 @@ TEST(Credits, cancel3) {
   cancel(&rn);
   // it should stay cancelled once cancelled
   add(&rn, 1);
+  ASSERT_TRUE(isCancelled(&rn));
+}
+
+TEST(Credits, cancel4) {
+  std::atomic<std::int64_t> rn{9999};
+  cancel(&rn);
+  // it should stay cancelled once cancelled
+  consume(&rn, 1);
   ASSERT_TRUE(isCancelled(&rn));
 }
 

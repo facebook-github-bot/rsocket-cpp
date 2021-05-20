@@ -1,11 +1,23 @@
-// Copyright 2004-present Facebook. All Rights Reserved.
+// Copyright (c) Facebook, Inc. and its affiliates.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #include "rsocket/framing/FramedReader.h"
 
 #include <folly/io/Cursor.h>
 
-#include "rsocket/framing/FrameSerializer_v0_1.h"
 #include "rsocket/framing/FrameSerializer_v1_0.h"
+#include "rsocket/internal/Common.h"
 
 namespace rsocket {
 
@@ -13,23 +25,19 @@ using namespace yarpl::flowable;
 
 namespace {
 
-constexpr size_t kFrameLengthFieldLengthV0_1 = sizeof(int32_t);
 constexpr size_t kFrameLengthFieldLengthV1_0 = 3;
 
 /// Get the byte size of the frame length field in an RSocket frame.
 size_t frameSizeFieldLength(ProtocolVersion version) {
   DCHECK_NE(version, ProtocolVersion::Unknown);
-  return version < FrameSerializerV1_0::Version ? kFrameLengthFieldLengthV0_1
-                                                : kFrameLengthFieldLengthV1_0;
+  return kFrameLengthFieldLengthV1_0;
 }
 
 /// Get the minimum size for a valid RSocket frame (including its frame length
 /// field).
 size_t minimalFrameLength(ProtocolVersion version) {
   DCHECK_NE(version, ProtocolVersion::Unknown);
-  return version < FrameSerializerV1_0::Version
-      ? FrameSerializerV0::kFrameHeaderSize + frameSizeFieldLength(version)
-      : FrameSerializerV1_0::kFrameHeaderSize;
+  return FrameSerializerV1_0::kFrameHeaderSize;
 }
 
 /// Compute the length of the entire frame (including its frame length field),
@@ -48,10 +56,10 @@ size_t frameSizeWithoutLengthField(ProtocolVersion version, size_t frameSize) {
       ? frameSize - frameSizeFieldLength(version)
       : frameSize;
 }
-}
+} // namespace
 
 size_t FramedReader::readFrameLength() const {
-  auto fieldLength = frameSizeFieldLength(*version_);
+  const auto fieldLength = frameSizeFieldLength(*version_);
   DCHECK_GT(fieldLength, 0);
 
   folly::io::Cursor cur{payloadQueue_.front()};
@@ -66,9 +74,9 @@ size_t FramedReader::readFrameLength() const {
   return frameLength;
 }
 
-void FramedReader::onSubscribe(yarpl::Reference<Subscription> subscription) {
-  DuplexConnection::DuplexSubscriber::onSubscribe(subscription);
-  subscription->request(std::numeric_limits<int64_t>::max());
+void FramedReader::onSubscribe(std::shared_ptr<Subscription> subscription) {
+  subscription_ = std::move(subscription);
+  subscription_->request(std::numeric_limits<int64_t>::max());
 }
 
 void FramedReader::onNext(std::unique_ptr<folly::IOBuf> payload) {
@@ -84,7 +92,7 @@ void FramedReader::parseFrames() {
   }
 
   // Delivering onNext can trigger termination and destroy this instance.
-  auto thisPtr = this->ref_from_this(this);
+  auto const self = shared_from_this();
 
   dispatchingFrames_ = true;
 
@@ -113,7 +121,8 @@ void FramedReader::parseFrames() {
     }
 
     payloadQueue_.trimStart(frameSizeFieldLen);
-    auto payloadSize = frameSizeWithoutLengthField(*version_, nextFrameSize);
+    const auto payloadSize =
+        frameSizeWithoutLengthField(*version_, nextFrameSize);
 
     DCHECK_GT(payloadSize, 0)
         << "folly::IOBufQueue::split(0) returns a nullptr, can't have that";
@@ -131,7 +140,7 @@ void FramedReader::parseFrames() {
 
 void FramedReader::onComplete() {
   payloadQueue_.move();
-  DuplexConnection::DuplexSubscriber::onComplete();
+  auto subscription = std::move(subscription_);
   if (auto subscriber = std::move(inner_)) {
     // After this call the instance can be destroyed!
     subscriber->onComplete();
@@ -140,7 +149,7 @@ void FramedReader::onComplete() {
 
 void FramedReader::onError(folly::exception_wrapper ex) {
   payloadQueue_.move();
-  DuplexConnection::DuplexSubscriber::onError({});
+  auto subscription = std::move(subscription_);
   if (auto subscriber = std::move(inner_)) {
     // After this call the instance can be destroyed!
     subscriber->onError(std::move(ex));
@@ -158,11 +167,11 @@ void FramedReader::cancel() {
 }
 
 void FramedReader::setInput(
-    yarpl::Reference<DuplexConnection::Subscriber> inner) {
+    std::shared_ptr<DuplexConnection::Subscriber> inner) {
   CHECK(!inner_)
       << "Must cancel original input to FramedReader before setting a new one";
   inner_ = std::move(inner);
-  inner_->onSubscribe(this->ref_from_this(this));
+  inner_->onSubscribe(shared_from_this());
 }
 
 bool FramedReader::ensureOrAutodetectProtocolVersion() {
@@ -170,30 +179,21 @@ bool FramedReader::ensureOrAutodetectProtocolVersion() {
     return true;
   }
 
-  auto minBytesNeeded = std::max(
-      FrameSerializerV0_1::kMinBytesNeededForAutodetection,
-      FrameSerializerV1_0::kMinBytesNeededForAutodetection);
+  const auto minBytesNeeded =
+      FrameSerializerV1_0::kMinBytesNeededForAutodetection;
   DCHECK_GT(minBytesNeeded, 0);
   if (payloadQueue_.chainLength() < minBytesNeeded) {
     return false;
   }
 
-  DCHECK_GT(minBytesNeeded, kFrameLengthFieldLengthV0_1);
   DCHECK_GT(minBytesNeeded, kFrameLengthFieldLengthV1_0);
 
   auto const& firstFrame = *payloadQueue_.front();
 
-  auto detected = FrameSerializerV1_0::detectProtocolVersion(
+  const auto detectedV1 = FrameSerializerV1_0::detectProtocolVersion(
       firstFrame, kFrameLengthFieldLengthV1_0);
-  if (detected != ProtocolVersion::Unknown) {
+  if (detectedV1 != ProtocolVersion::Unknown) {
     *version_ = FrameSerializerV1_0::Version;
-    return true;
-  }
-
-  detected = FrameSerializerV0_1::detectProtocolVersion(
-      firstFrame, kFrameLengthFieldLengthV0_1);
-  if (detected != ProtocolVersion::Unknown) {
-    *version_ = FrameSerializerV0_1::Version;
     return true;
   }
 
@@ -205,12 +205,13 @@ void FramedReader::error(std::string errorMsg) {
   VLOG(1) << "error: " << errorMsg;
 
   payloadQueue_.move();
-  if (DuplexConnection::DuplexSubscriber::subscription()) {
-    DuplexConnection::DuplexSubscriber::subscription()->cancel();
+  if (auto subscription = std::move(subscription_)) {
+    subscription->cancel();
   }
   if (auto subscriber = std::move(inner_)) {
     // After this call the instance can be destroyed!
     subscriber->onError(std::runtime_error{std::move(errorMsg)});
   }
 }
-}
+
+} // namespace rsocket

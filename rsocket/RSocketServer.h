@@ -1,4 +1,16 @@
-// Copyright 2004-present Facebook. All Rights Reserved.
+// Copyright (c) Facebook, Inc. and its affiliates.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #pragma once
 
@@ -12,6 +24,7 @@
 #include "rsocket/RSocketParameters.h"
 #include "rsocket/RSocketResponder.h"
 #include "rsocket/RSocketServiceHandler.h"
+#include "rsocket/internal/ConnectionSet.h"
 #include "rsocket/internal/SetupResumeAcceptor.h"
 
 namespace rsocket {
@@ -90,17 +103,24 @@ class RSocketServer {
    */
   void setSingleThreadedResponder();
 
+  /**
+   * Number of active connections to this server.
+   */
+  size_t getNumConnections();
+
  private:
-  void onRSocketSetup(
+  static void onRSocketSetup(
       std::shared_ptr<RSocketServiceHandler> serviceHandler,
-      yarpl::Reference<rsocket::FrameTransport> frameTransport,
+      std::shared_ptr<ConnectionSet> connectionSet,
+      bool scheduledResponder,
+      std::unique_ptr<DuplexConnection> connection,
       rsocket::SetupParameters setupPayload);
   void onRSocketResume(
       std::shared_ptr<RSocketServiceHandler> serviceHandler,
-      yarpl::Reference<rsocket::FrameTransport> frameTransport,
+      std::unique_ptr<DuplexConnection> connection,
       rsocket::ResumeParameters setupPayload);
 
-  std::unique_ptr<ConnectionAcceptor> duplexConnectionAcceptor_;
+  const std::unique_ptr<ConnectionAcceptor> duplexConnectionAcceptor_;
   bool started{false};
 
   class SetupResumeAcceptorTag {};

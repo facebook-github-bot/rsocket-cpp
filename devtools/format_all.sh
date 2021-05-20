@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+#
+# Copyright 2004-present Facebook. All Rights Reserved.
+#
 set -xue
 
 cd "$(dirname "$0")/.."

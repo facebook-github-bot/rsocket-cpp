@@ -46,7 +46,6 @@ install_manifest.txt
 
 ### Project ###
 
-/build
 /reactivesocket-cpp/CTestTestfile.cmake
 /reactivesocket-cpp/ReactiveSocketTest
 /reactivesocket-cpp/compile_commands.json

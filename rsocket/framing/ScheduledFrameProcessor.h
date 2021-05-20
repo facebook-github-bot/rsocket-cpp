@@ -1,3 +1,17 @@
+// Copyright (c) Facebook, Inc. and its affiliates.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 #pragma once
 
 #include <folly/io/async/EventBase.h>
@@ -16,19 +30,15 @@ namespace rsocket {
 // (FrameProcessor) in the original EventBase.
 class ScheduledFrameProcessor : public FrameProcessor {
  public:
-  ScheduledFrameProcessor(
-      std::shared_ptr<FrameProcessor> fp,
-      folly::EventBase* evb)
-      : frameProcessor_(std::move(fp)), evb_(evb) {}
-
+  ScheduledFrameProcessor(std::shared_ptr<FrameProcessor>, folly::EventBase*);
   ~ScheduledFrameProcessor();
 
-  void processFrame(std::unique_ptr<folly::IOBuf> ioBuf) override;
-  void onTerminal(folly::exception_wrapper ex) override;
+  void processFrame(std::unique_ptr<folly::IOBuf>) override;
+  void onTerminal(folly::exception_wrapper) override;
 
  private:
-  std::shared_ptr<FrameProcessor> frameProcessor_;
-  folly::EventBase* evb_;
+  folly::EventBase* const evb_;
+  std::shared_ptr<FrameProcessor> processor_;
 };
 
-} // rsocket
+} // namespace rsocket

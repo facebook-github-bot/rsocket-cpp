@@ -1,4 +1,16 @@
-// Copyright 2004-present Facebook. All Rights Reserved.
+// Copyright (c) Facebook, Inc. and its affiliates.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #pragma once
 
@@ -21,8 +33,6 @@ class exception_wrapper;
 
 namespace rsocket {
 
-class FrameTransport;
-
 /// Acceptor of DuplexConnections that lets us decide whether the connection is
 /// trying to setup a new connection or resume an existing one.
 ///
@@ -30,10 +40,10 @@ class FrameTransport;
 /// SetupResumeAcceptor::accept() entry point is not thread-safe.
 class SetupResumeAcceptor final {
  public:
-  using OnSetup =
-      folly::Function<void(yarpl::Reference<FrameTransport>, SetupParameters)>;
-  using OnResume =
-      folly::Function<void(yarpl::Reference<FrameTransport>, ResumeParameters)>;
+  using OnSetup = folly::Function<
+      void(std::unique_ptr<DuplexConnection>, SetupParameters) noexcept>;
+  using OnResume = folly::Function<
+      void(std::unique_ptr<DuplexConnection>, ResumeParameters) noexcept>;
 
   explicit SetupResumeAcceptor(folly::EventBase*);
   ~SetupResumeAcceptor();
@@ -48,37 +58,7 @@ class SetupResumeAcceptor final {
   folly::Future<folly::Unit> close();
 
  private:
-  /// Subscriber that owns a connection, sets itself as that connection's input,
-  /// and reads out a single frame before cancelling.
-  class OneFrameSubscriber final
-      : public yarpl::flowable::BaseSubscriber<std::unique_ptr<folly::IOBuf>> {
-   public:
-    OneFrameSubscriber(
-        SetupResumeAcceptor&,
-        std::unique_ptr<DuplexConnection>,
-        SetupResumeAcceptor::OnSetup,
-        SetupResumeAcceptor::OnResume);
-
-    void setInput();
-
-    /// Shut down the DuplexConnection, breaking the cycle between it and this
-    /// subscriber.  Expects the DuplexConnection's destructor to call
-    /// onComplete/onError on its input subscriber (this).
-    void close();
-
-    // Subscriber.
-    void onSubscribeImpl() override;
-    void onNextImpl(std::unique_ptr<folly::IOBuf>) override;
-    void onCompleteImpl() override;
-    void onErrorImpl(folly::exception_wrapper) override;
-    void onTerminateImpl() override;
-
-   private:
-    SetupResumeAcceptor& acceptor_;
-    std::unique_ptr<DuplexConnection> connection_;
-    SetupResumeAcceptor::OnSetup onSetup_;
-    SetupResumeAcceptor::OnResume onResume_;
-  };
+  class OneFrameSubscriber;
 
   void processFrame(
       std::unique_ptr<DuplexConnection>,
@@ -87,7 +67,7 @@ class SetupResumeAcceptor final {
       OnResume);
 
   /// Remove a OneFrameSubscriber from the set.
-  void remove(const yarpl::Reference<OneFrameSubscriber>&);
+  void remove(const std::shared_ptr<OneFrameSubscriber>&);
 
   /// Close all open connections.
   void closeAll();
@@ -100,11 +80,11 @@ class SetupResumeAcceptor final {
   /// work within the owner thread.
   bool inOwnerThread() const;
 
-  std::unordered_set<yarpl::Reference<OneFrameSubscriber>> connections_;
+  std::unordered_set<std::shared_ptr<OneFrameSubscriber>> connections_;
 
   bool closed_{false};
 
-  folly::EventBase* eventBase_;
+  folly::EventBase* const eventBase_;
 };
 
 } // namespace rsocket

@@ -1,41 +1,26 @@
-// Copyright 2004-present Facebook. All Rights Reserved.
+// Copyright (c) Facebook, Inc. and its affiliates.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #pragma once
 
 #include <memory>
 
+#include <folly/io/IOBuf.h>
+
 #include "yarpl/flowable/Subscriber.h"
 
-namespace folly {
-class IOBuf;
-}
-
 namespace rsocket {
-
-using yarpl::Reference;
-
-class DuplexSubscriber :
-  public yarpl::flowable::Subscriber<std::unique_ptr<folly::IOBuf>>
-{
-public:
-  void onSubscribe(Reference<yarpl::flowable::Subscription> sub) override {
-    subscription_ = sub;
-  }
-  void onComplete() override {
-    subscription_.reset();
-  }
-  void onError(folly::exception_wrapper) override {
-    subscription_.reset();
-  }
-
-protected:
-  Reference<yarpl::flowable::Subscription> subscription() {
-    return subscription_;
-  }
-
-private:
-  Reference<yarpl::flowable::Subscription> subscription_;
-};
 
 /// Represents a connection of the underlying protocol, on top of which the
 /// RSocket protocol is layered.  The underlying protocol MUST provide an
@@ -55,7 +40,6 @@ private:
 class DuplexConnection {
  public:
   using Subscriber = yarpl::flowable::Subscriber<std::unique_ptr<folly::IOBuf>>;
-  using DuplexSubscriber = rsocket::DuplexSubscriber;
 
   virtual ~DuplexConnection() = default;
 
@@ -63,7 +47,7 @@ class DuplexConnection {
   ///
   /// If setInput() has already been called, then calling setInput() again will
   /// complete the previous subscriber.
-  virtual void setInput(yarpl::Reference<Subscriber>) = 0;
+  virtual void setInput(std::shared_ptr<Subscriber>) = 0;
 
   /// Write a serialized frame to the connection.
   ///
@@ -75,4 +59,5 @@ class DuplexConnection {
     return false;
   }
 };
-}
+
+} // namespace rsocket

@@ -1,4 +1,16 @@
-// Copyright 2004-present Facebook. All Rights Reserved.
+// Copyright (c) Facebook, Inc. and its affiliates.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #pragma once
 
@@ -27,21 +39,31 @@ class RSocketClient {
   ~RSocketClient();
 
   RSocketClient(const RSocketClient&) = delete;
-  RSocketClient(RSocketClient&&) = default;
+  RSocketClient(RSocketClient&&) = delete;
   RSocketClient& operator=(const RSocketClient&) = delete;
-  RSocketClient& operator=(RSocketClient&&) = default;
+  RSocketClient& operator=(RSocketClient&&) = delete;
 
   friend class RSocket;
 
   // Returns the RSocketRequester associated with the RSocketClient.
   const std::shared_ptr<RSocketRequester>& getRequester() const;
 
-  // Resumes the connection.  If a stateMachine already exists,
-  // it provides a warm-resumption.  If a stateMachine does not exist,
-  // it does a cold-resumption.  The returned future resolves on successful
-  // resumption.  Else either a ConnectionException or a ResumptionException
-  // is raised.
+  // Returns if this client is currently disconnected
+  bool isDisconnected() const;
+
+  // Resumes the client's connection.  If the client was previously connected
+  // this will attempt a warm-resumption.  Otherwise this will attempt a
+  // cold-resumption.
+  //
+  // Uses the internal ConnectionFactory instance to re-connect.
   folly::Future<folly::Unit> resume();
+
+  // Like resume(), but this doesn't use a ConnectionFactory and instead takes
+  // the connection and transport EventBase by argument.
+  //
+  // Prefer using resume() if possible.
+  folly::Future<folly::Unit> resumeFromConnection(
+      ConnectionFactory::ConnectedDuplexConnection);
 
   // Disconnect the underlying transport.
   folly::Future<folly::Unit> disconnect(folly::exception_wrapper = {});
@@ -70,9 +92,9 @@ class RSocketClient {
   // Creates RSocketStateMachine and RSocketRequester
   void createState();
 
-  std::shared_ptr<ConnectionFactory> connectionFactory_;
+  const std::shared_ptr<ConnectionFactory> connectionFactory_;
   std::shared_ptr<RSocketResponder> responder_;
-  std::chrono::milliseconds keepaliveInterval_;
+  const std::chrono::milliseconds keepaliveInterval_;
   std::shared_ptr<RSocketStats> stats_;
   std::shared_ptr<RSocketConnectionEvents> connectionEvents_;
   std::shared_ptr<ResumeManager> resumeManager_;
@@ -81,8 +103,8 @@ class RSocketClient {
   std::shared_ptr<RSocketStateMachine> stateMachine_;
   std::shared_ptr<RSocketRequester> requester_;
 
-  ProtocolVersion protocolVersion_;
-  ResumeIdentificationToken token_;
+  const ProtocolVersion protocolVersion_;
+  const ResumeIdentificationToken token_;
 
   // Remember the StateMachine's evb (supplied through constructor).  If no
   // EventBase is provided, the underlying transport's EventBase will be used
@@ -94,6 +116,5 @@ class RSocketClient {
   // EventBase, but the transport ends up being in different EventBase after
   // resumption, and vice versa.
   folly::EventBase* evb_{nullptr};
-
 };
-}
+} // namespace rsocket

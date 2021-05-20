@@ -1,4 +1,16 @@
-// Copyright 2004-present Facebook. All Rights Reserved.
+// Copyright (c) Facebook, Inc. and its affiliates.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #pragma once
 
@@ -14,7 +26,8 @@
 #include "rsocket/framing/FrameFlags.h"
 #include "rsocket/framing/FrameHeader.h"
 #include "rsocket/framing/FrameType.h"
-#include "rsocket/internal/Common.h"
+#include "rsocket/framing/ProtocolVersion.h"
+#include "rsocket/framing/ResumeIdentificationToken.h"
 
 namespace folly {
 template <typename V>
@@ -22,10 +35,21 @@ class Optional;
 namespace io {
 class Cursor;
 class QueueAppender;
-}
-}
+} // namespace io
+} // namespace folly
 
 namespace rsocket {
+
+namespace detail {
+
+FrameFlags getFlags(const Payload&);
+
+void checkFlags(const Payload&, FrameFlags);
+
+} // namespace detail
+
+using ResumePosition = int64_t;
+constexpr ResumePosition kUnspecifiedResumePosition = -1;
 
 /// Frames do not form hierarchy, as we never perform type erasure on a frame.
 /// We use inheritance only to save code duplication.
@@ -46,7 +70,7 @@ class Frame_REQUEST_N {
 
   Frame_REQUEST_N() = default;
   Frame_REQUEST_N(StreamId streamId, uint32_t requestN)
-      : header_(FrameType::REQUEST_N, FrameFlags::EMPTY, streamId),
+      : header_(FrameType::REQUEST_N, FrameFlags::EMPTY_, streamId),
         requestN_(requestN) {
     DCHECK(requestN_ > 0);
     DCHECK(requestN_ <= kMaxRequestN);
@@ -66,12 +90,10 @@ class Frame_REQUEST_Base {
       FrameFlags flags,
       uint32_t requestN,
       Payload payload)
-      : header_(frameType, flags | payload.getFlags(), streamId),
+      : header_(frameType, flags | detail::getFlags(payload), streamId),
         requestN_(requestN),
         payload_(std::move(payload)) {
-    // to verify the client didn't set
-    // METADATA and provided none
-    payload_.checkFlags(header_.flags);
+    detail::checkFlags(payload_, header_.flags);
     // TODO: DCHECK(requestN_ > 0);
     DCHECK(requestN_ <= Frame_REQUEST_N::kMaxRequestN);
   }
@@ -155,11 +177,10 @@ class Frame_REQUEST_RESPONSE {
   Frame_REQUEST_RESPONSE(StreamId streamId, FrameFlags flags, Payload payload)
       : header_(
             FrameType::REQUEST_RESPONSE,
-            (flags & AllowedFlags) | payload.getFlags(),
+            (flags & AllowedFlags) | detail::getFlags(payload),
             streamId),
         payload_(std::move(payload)) {
-    payload_.checkFlags(header_.flags); // to verify the client didn't set
-    // METADATA and provided none
+    detail::checkFlags(payload_, header_.flags);
   }
 
   FrameHeader header_;
@@ -176,11 +197,10 @@ class Frame_REQUEST_FNF {
   Frame_REQUEST_FNF(StreamId streamId, FrameFlags flags, Payload payload)
       : header_(
             FrameType::REQUEST_FNF,
-            (flags & AllowedFlags) | payload.getFlags(),
+            (flags & AllowedFlags) | detail::getFlags(payload),
             streamId),
         payload_(std::move(payload)) {
-    payload_.checkFlags(header_.flags); // to verify the client didn't set
-    // METADATA and provided none
+    detail::checkFlags(payload_, header_.flags);
   }
 
   FrameHeader header_;
@@ -206,7 +226,7 @@ class Frame_CANCEL {
  public:
   Frame_CANCEL() = default;
   explicit Frame_CANCEL(StreamId streamId)
-      : header_(FrameType::CANCEL, FrameFlags::EMPTY, streamId) {}
+      : header_(FrameType::CANCEL, FrameFlags::EMPTY_, streamId) {}
 
   FrameHeader header_;
 };
@@ -221,11 +241,10 @@ class Frame_PAYLOAD {
   Frame_PAYLOAD(StreamId streamId, FrameFlags flags, Payload payload)
       : header_(
             FrameType::PAYLOAD,
-            (flags & AllowedFlags) | payload.getFlags(),
+            (flags & AllowedFlags) | detail::getFlags(payload),
             streamId),
         payload_(std::move(payload)) {
-    payload_.checkFlags(header_.flags); // to verify the client didn't set
-    // METADATA and provided none
+    detail::checkFlags(payload_, header_.flags);
   }
 
   static Frame_PAYLOAD complete(StreamId streamId);
@@ -241,26 +260,27 @@ class Frame_ERROR {
 
   Frame_ERROR() = default;
   Frame_ERROR(StreamId streamId, ErrorCode errorCode, Payload payload)
-      : header_(FrameType::ERROR, payload.getFlags(), streamId),
+      : header_(FrameType::ERROR, detail::getFlags(payload), streamId),
         errorCode_(errorCode),
         payload_(std::move(payload)) {}
 
   // Connection errors.
-  static Frame_ERROR invalidSetup(std::string);
-  static Frame_ERROR unsupportedSetup(std::string);
-  static Frame_ERROR rejectedSetup(std::string);
-  static Frame_ERROR rejectedResume(std::string);
-  static Frame_ERROR connectionError(std::string);
+  static Frame_ERROR invalidSetup(folly::StringPiece);
+  static Frame_ERROR unsupportedSetup(folly::StringPiece);
+  static Frame_ERROR rejectedSetup(folly::StringPiece);
+  static Frame_ERROR rejectedResume(folly::StringPiece);
+  static Frame_ERROR connectionError(folly::StringPiece);
 
   // Stream errors.
-  static Frame_ERROR applicationError(StreamId, std::string);
-  static Frame_ERROR rejected(StreamId, std::string);
-  static Frame_ERROR canceled(StreamId, std::string);
-  static Frame_ERROR invalid(StreamId, std::string);
+  static Frame_ERROR applicationError(StreamId, folly::StringPiece);
+  static Frame_ERROR applicationError(StreamId, Payload&&);
+  static Frame_ERROR rejected(StreamId, folly::StringPiece);
+  static Frame_ERROR canceled(StreamId, folly::StringPiece);
+  static Frame_ERROR invalid(StreamId, folly::StringPiece);
 
  private:
-  static Frame_ERROR connectionErr(ErrorCode, std::string);
-  static Frame_ERROR streamErr(ErrorCode, std::string, StreamId);
+  static Frame_ERROR connectionErr(ErrorCode, folly::StringPiece);
+  static Frame_ERROR streamErr(ErrorCode, folly::StringPiece, StreamId);
 
  public:
   FrameHeader header_;
@@ -314,7 +334,7 @@ class Frame_SETUP {
       Payload payload)
       : header_(
             FrameType::SETUP,
-            (flags & AllowedFlags) | payload.getFlags(),
+            (flags & AllowedFlags) | detail::getFlags(payload),
             0),
         versionMajor_(versionMajor),
         versionMinor_(versionMinor),
@@ -324,8 +344,7 @@ class Frame_SETUP {
         metadataMimeType_(metadataMimeType),
         dataMimeType_(dataMimeType),
         payload_(std::move(payload)) {
-    payload_.checkFlags(header_.flags); // to verify the client didn't set
-    // METADATA and provided none
+    detail::checkFlags(payload_, header_.flags);
     DCHECK(keepaliveTime_ > 0);
     DCHECK(maxLifetime_ > 0);
     DCHECK(keepaliveTime_ <= kMaxKeepaliveTime);
@@ -361,7 +380,7 @@ class Frame_LEASE {
       std::unique_ptr<folly::IOBuf> metadata = std::unique_ptr<folly::IOBuf>())
       : header_(
             FrameType::LEASE,
-            metadata ? FrameFlags::METADATA : FrameFlags::EMPTY,
+            metadata ? FrameFlags::METADATA : FrameFlags::EMPTY_,
             0),
         ttl_(ttl),
         numberOfRequests_(numberOfRequests),
@@ -388,7 +407,7 @@ class Frame_RESUME {
       ResumePosition lastReceivedServerPosition,
       ResumePosition clientPosition,
       ProtocolVersion protocolVersion)
-      : header_(FrameType::RESUME, FrameFlags::EMPTY, 0),
+      : header_(FrameType::RESUME, FrameFlags::EMPTY_, 0),
         versionMajor_(protocolVersion.major),
         versionMinor_(protocolVersion.minor),
         token_(token),
@@ -409,15 +428,12 @@ class Frame_RESUME_OK {
  public:
   Frame_RESUME_OK() = default;
   explicit Frame_RESUME_OK(ResumePosition position)
-      : header_(FrameType::RESUME_OK, FrameFlags::EMPTY, 0),
+      : header_(FrameType::RESUME_OK, FrameFlags::EMPTY_, 0),
         position_(position) {}
 
   FrameHeader header_;
   ResumePosition position_{};
 };
 std::ostream& operator<<(std::ostream&, const Frame_RESUME_OK&);
-/// @}
 
-StreamType getStreamType(FrameType frameType);
-bool isNewStreamFrame(FrameType frameType);
-}
+} // namespace rsocket

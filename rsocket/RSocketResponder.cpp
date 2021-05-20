@@ -1,35 +1,86 @@
-// Copyright 2004-present Facebook. All Rights Reserved.
+// Copyright (c) Facebook, Inc. and its affiliates.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #include "rsocket/RSocketResponder.h"
 
 #include <folly/io/async/EventBase.h>
+#include <yarpl/flowable/CancelingSubscriber.h>
 
 namespace rsocket {
 
-yarpl::Reference<yarpl::single::Single<rsocket::Payload>>
-RSocketResponder::handleRequestResponse(rsocket::Payload, rsocket::StreamId) {
-  return yarpl::single::Singles::error<rsocket::Payload>(
+using namespace yarpl::flowable;
+using namespace yarpl::single;
+
+void RSocketResponderCore::handleRequestStream(
+    Payload,
+    StreamId,
+    std::shared_ptr<Subscriber<Payload>> response) noexcept {
+  response->onSubscribe(Subscription::create());
+  response->onError(std::logic_error("handleRequestStream not implemented"));
+}
+
+void RSocketResponderCore::handleRequestResponse(
+    Payload,
+    StreamId,
+    std::shared_ptr<SingleObserver<Payload>> responseObserver) noexcept {
+  responseObserver->onSubscribe(SingleSubscriptions::empty());
+  responseObserver->onError(
       std::logic_error("handleRequestResponse not implemented"));
 }
 
-yarpl::Reference<yarpl::flowable::Flowable<rsocket::Payload>>
-RSocketResponder::handleRequestStream(rsocket::Payload, rsocket::StreamId) {
-  return yarpl::flowable::Flowables::error<rsocket::Payload>(
+void RSocketResponderCore::handleFireAndForget(Payload, StreamId) {
+  // No default implementation, no error response to provide.
+}
+
+void RSocketResponderCore::handleMetadataPush(std::unique_ptr<folly::IOBuf>) {
+  // No default implementation, no error response to provide.
+}
+
+std::shared_ptr<Subscriber<Payload>> RSocketResponderCore::handleRequestChannel(
+    Payload,
+    StreamId,
+    std::shared_ptr<Subscriber<Payload>> response) noexcept {
+  response->onSubscribe(Subscription::create());
+  response->onError(std::logic_error("handleRequestStream not implemented"));
+
+  // cancel immediately
+  return std::make_shared<CancelingSubscriber<Payload>>();
+}
+
+std::shared_ptr<Single<Payload>> RSocketResponder::handleRequestResponse(
+    Payload,
+    StreamId) {
+  return Singles::error<Payload>(
+      std::logic_error("handleRequestResponse not implemented"));
+}
+
+std::shared_ptr<Flowable<Payload>> RSocketResponder::handleRequestStream(
+    Payload,
+    StreamId) {
+  return Flowable<Payload>::error(
       std::logic_error("handleRequestStream not implemented"));
 }
 
-yarpl::Reference<yarpl::flowable::Flowable<rsocket::Payload>>
-RSocketResponder::handleRequestChannel(
-    rsocket::Payload,
-    yarpl::Reference<yarpl::flowable::Flowable<rsocket::Payload>>,
-    rsocket::StreamId) {
-  return yarpl::flowable::Flowables::error<rsocket::Payload>(
+std::shared_ptr<Flowable<Payload>> RSocketResponder::handleRequestChannel(
+    Payload,
+    std::shared_ptr<Flowable<Payload>>,
+    StreamId) {
+  return Flowable<Payload>::error(
       std::logic_error("handleRequestChannel not implemented"));
 }
 
-void RSocketResponder::handleFireAndForget(
-    rsocket::Payload,
-    rsocket::StreamId) {
+void RSocketResponder::handleFireAndForget(Payload, StreamId) {
   // No default implementation, no error response to provide.
 }
 
@@ -38,17 +89,15 @@ void RSocketResponder::handleMetadataPush(std::unique_ptr<folly::IOBuf>) {
 }
 
 /// Handles a new Channel requested by the other end.
-yarpl::Reference<yarpl::flowable::Subscriber<Payload>>
-RSocketResponder::handleRequestChannelCore(
+std::shared_ptr<Subscriber<Payload>>
+RSocketResponderAdapter::handleRequestChannel(
     Payload request,
     StreamId streamId,
-    const yarpl::Reference<yarpl::flowable::Subscriber<Payload>>&
-        response) noexcept {
-  class EagerSubscriberBridge
-      : public yarpl::flowable::Subscriber<rsocket::Payload> {
+    std::shared_ptr<Subscriber<Payload>> response) noexcept {
+  class EagerSubscriberBridge : public Subscriber<Payload> {
    public:
-    void onSubscribe(yarpl::Reference<yarpl::flowable::Subscription>
-                         subscription) noexcept override {
+    void onSubscribe(
+        std::shared_ptr<Subscription> subscription) noexcept override {
       CHECK(!subscription_);
       subscription_ = std::move(subscription);
       if (inner_) {
@@ -56,13 +105,12 @@ RSocketResponder::handleRequestChannelCore(
       }
     }
 
-    void onNext(rsocket::Payload element) noexcept override {
+    void onNext(Payload element) noexcept override {
       DCHECK(inner_);
       inner_->onNext(std::move(element));
     }
 
     void onComplete() noexcept override {
-      DCHECK(inner_);
       if (auto inner = std::move(inner_)) {
         inner->onComplete();
         subscription_.reset();
@@ -81,8 +129,7 @@ RSocketResponder::handleRequestChannelCore(
       }
     }
 
-    void subscribe(
-        yarpl::Reference<yarpl::flowable::Subscriber<rsocket::Payload>> inner) {
+    void subscribe(std::shared_ptr<Subscriber<Payload>> inner) {
       CHECK(!inner_); // only one call to subscribe is supported
       CHECK(inner);
 
@@ -100,19 +147,19 @@ RSocketResponder::handleRequestChannelCore(
     }
 
    private:
-    yarpl::Reference<yarpl::flowable::Subscriber<rsocket::Payload>> inner_;
-    yarpl::Reference<yarpl::flowable::Subscription> subscription_;
+    std::shared_ptr<Subscriber<Payload>> inner_;
+    std::shared_ptr<Subscription> subscription_;
     folly::exception_wrapper error_;
     bool completed_{false};
   };
 
-  auto eagerSubscriber = yarpl::make_ref<EagerSubscriberBridge>();
-  auto flowable = handleRequestChannel(
+  auto eagerSubscriber = std::make_shared<EagerSubscriberBridge>();
+  auto flowable = inner_->handleRequestChannel(
       std::move(request),
-      yarpl::flowable::Flowables::fromPublisher<Payload>(
-          [eagerSubscriber](
-              yarpl::Reference<yarpl::flowable::Subscriber<Payload>>
-                  subscriber) { eagerSubscriber->subscribe(subscriber); }),
+      internal::flowableFromSubscriber<Payload>(
+          [eagerSubscriber](std::shared_ptr<Subscriber<Payload>> subscriber) {
+            eagerSubscriber->subscribe(subscriber);
+          }),
       std::move(streamId));
   // bridge from the existing eager RequestHandler and old Subscriber type
   // to the lazy Flowable and new Subscriber type
@@ -121,22 +168,33 @@ RSocketResponder::handleRequestChannelCore(
 }
 
 /// Handles a new Stream requested by the other end.
-void RSocketResponder::handleRequestStreamCore(
+void RSocketResponderAdapter::handleRequestStream(
     Payload request,
     StreamId streamId,
-    const yarpl::Reference<yarpl::flowable::Subscriber<Payload>>&
-        response) noexcept {
-  auto flowable = handleRequestStream(std::move(request), std::move(streamId));
+    std::shared_ptr<Subscriber<Payload>> response) noexcept {
+  auto flowable =
+      inner_->handleRequestStream(std::move(request), std::move(streamId));
   flowable->subscribe(std::move(response));
 }
 
 /// Handles a new inbound RequestResponse requested by the other end.
-void RSocketResponder::handleRequestResponseCore(
+void RSocketResponderAdapter::handleRequestResponse(
     Payload request,
     StreamId streamId,
-    const yarpl::Reference<yarpl::single::SingleObserver<Payload>>&
-        responseObserver) noexcept {
-  auto single = handleRequestResponse(std::move(request), streamId);
+    std::shared_ptr<SingleObserver<Payload>> responseObserver) noexcept {
+  auto single = inner_->handleRequestResponse(std::move(request), streamId);
   single->subscribe(std::move(responseObserver));
 }
+
+void RSocketResponderAdapter::handleFireAndForget(
+    Payload request,
+    StreamId streamId) {
+  inner_->handleFireAndForget(std::move(request), streamId);
+}
+
+void RSocketResponderAdapter::handleMetadataPush(
+    std::unique_ptr<folly::IOBuf> buf) {
+  inner_->handleMetadataPush(std::move(buf));
+}
+
 } // namespace rsocket

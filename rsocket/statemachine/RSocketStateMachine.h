@@ -1,8 +1,20 @@
-// Copyright 2004-present Facebook. All Rights Reserved.
+// Copyright (c) Facebook, Inc. and its affiliates.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #pragma once
 
-#include <list>
+#include <deque>
 #include <memory>
 
 #include "rsocket/ColdResumeHandler.h"
@@ -11,29 +23,31 @@
 #include "rsocket/RSocketParameters.h"
 #include "rsocket/ResumeManager.h"
 #include "rsocket/framing/FrameProcessor.h"
+#include "rsocket/framing/FrameSerializer.h"
 #include "rsocket/internal/Common.h"
 #include "rsocket/internal/KeepaliveTimer.h"
-#include "rsocket/statemachine/StreamState.h"
-#include "rsocket/statemachine/StreamsFactory.h"
+#include "rsocket/statemachine/StreamFragmentAccumulator.h"
+#include "rsocket/statemachine/StreamStateMachineBase.h"
 #include "rsocket/statemachine/StreamsWriter.h"
+#include "yarpl/flowable/Subscriber.h"
+#include "yarpl/flowable/Subscription.h"
+#include "yarpl/single/SingleObserver.h"
 
 namespace rsocket {
 
 class ClientResumeStatusCallback;
-class ConnectionSet;
 class DuplexConnection;
-class FrameSerializer;
 class FrameTransport;
 class Frame_ERROR;
 class KeepaliveTimer;
 class RSocketConnectionEvents;
 class RSocketParameters;
 class RSocketResponder;
+class RSocketResponderCore;
 class RSocketStateMachine;
 class RSocketStats;
 class ResumeManager;
-class StreamState;
-class StreamStateMachineBase;
+class RSocketStateMachineTest;
 
 class FrameSink {
  public:
@@ -60,9 +74,18 @@ class FrameSink {
 class RSocketStateMachine final
     : public FrameSink,
       public FrameProcessor,
-      public StreamsWriter,
+      public StreamsWriterImpl,
       public std::enable_shared_from_this<RSocketStateMachine> {
  public:
+  RSocketStateMachine(
+      std::shared_ptr<RSocketResponderCore> requestResponder,
+      std::unique_ptr<KeepaliveTimer> keepaliveTimer,
+      RSocketMode mode,
+      std::shared_ptr<RSocketStats> stats,
+      std::shared_ptr<RSocketConnectionEvents> connectionEvents,
+      std::shared_ptr<ResumeManager> resumeManager,
+      std::shared_ptr<ColdResumeHandler> coldResumeHandler);
+
   RSocketStateMachine(
       std::shared_ptr<RSocketResponder> requestResponder,
       std::unique_ptr<KeepaliveTimer> keepaliveTimer,
@@ -75,18 +98,18 @@ class RSocketStateMachine final
   ~RSocketStateMachine();
 
   /// Create a new connection as a server.
-  void connectServer(yarpl::Reference<FrameTransport>, const SetupParameters&);
+  void connectServer(std::shared_ptr<FrameTransport>, const SetupParameters&);
 
   /// Resume a connection as a server.
-  bool resumeServer(yarpl::Reference<FrameTransport>, const ResumeParameters&);
+  bool resumeServer(std::shared_ptr<FrameTransport>, const ResumeParameters&);
 
   /// Connect as a client.  Sends a SETUP frame.
-  void connectClient(yarpl::Reference<FrameTransport>, SetupParameters);
+  void connectClient(std::shared_ptr<FrameTransport>, SetupParameters);
 
   /// Resume a connection as a client.  Sends a RESUME frame.
   void resumeClient(
       ResumeIdentificationToken,
-      yarpl::Reference<FrameTransport>,
+      std::shared_ptr<FrameTransport>,
       std::unique_ptr<ClientResumeStatusCallback>,
       ProtocolVersion);
 
@@ -107,39 +130,18 @@ class RSocketStateMachine final
   /// Close the connection and all of its streams.
   void close(folly::exception_wrapper, StreamCompletionSignal);
 
-  /// A contract exposed to StreamAutomatonBase, modelled after Subscriber
-  /// and Subscription contracts, while omitting flow control related signals.
+  void requestStream(
+      Payload request,
+      std::shared_ptr<yarpl::flowable::Subscriber<Payload>> responseSink);
 
-  /// Adds a stream stateMachine to the connection.
-  ///
-  /// This signal corresponds to Subscriber::onSubscribe.
-  ///
-  /// No frames will be issued as a result of this call. Stream stateMachine
-  /// must take care of writing appropriate frames to the connection, using
-  /// ::writeFrame after calling this method.
-  void addStream(StreamId, yarpl::Reference<StreamStateMachineBase>);
+  std::shared_ptr<yarpl::flowable::Subscriber<Payload>> requestChannel(
+      Payload request,
+      bool hasInitialRequest,
+      std::shared_ptr<yarpl::flowable::Subscriber<Payload>> responseSink);
 
-  /// Indicates that the stream should be removed from the connection.
-  ///
-  /// No frames will be issued as a result of this call. Stream stateMachine
-  /// must take care of writing appropriate frames to the connection, using
-  /// ::writeFrame, prior to calling this method.
-  ///
-  /// This signal corresponds to Subscriber::{onComplete,onError} and
-  /// Subscription::cancel.
-  /// Per ReactiveStreams specification:
-  /// 1. no other signal can be delivered during or after this one,
-  /// 2. "unsubscribe handshake" guarantees that the signal will be delivered
-  ///   at least once, even if the stateMachine initiated stream closure,
-  /// 3. per "unsubscribe handshake", the stateMachine must deliver
-  /// corresponding
-  ///   terminal signal to the connection.
-  ///
-  /// Additionally, in order to simplify implementation of stream stateMachine:
-  /// 4. the signal bound with a particular StreamId is idempotent and may be
-  ///   delivered multiple times as long as the caller holds shared_ptr to
-  ///   ConnectionAutomaton.
-  void endStream(StreamId, StreamCompletionSignal);
+  void requestResponse(
+      Payload payload,
+      std::shared_ptr<yarpl::single::SingleObserver<Payload>> responseSink);
 
   /// Send a REQUEST_FNF frame.
   void fireAndForget(Payload);
@@ -150,21 +152,73 @@ class RSocketStateMachine final
   /// Send a KEEPALIVE frame, with the RESPOND flag set.
   void sendKeepalive(std::unique_ptr<folly::IOBuf>) override;
 
-  /// Register the connection set that's holding this state machine.
-  void registerSet(std::shared_ptr<ConnectionSet>);
+  class CloseCallback {
+   public:
+    virtual ~CloseCallback() = default;
+    virtual void remove(RSocketStateMachine&) = 0;
+  };
 
-  StreamsFactory& streamsFactory() {
-    return streamsFactory_;
-  }
+  /// Register a callback to be called when the StateMachine is closed.
+  /// It will be used to inform the containers, i.e. ConnectionSet or
+  /// wangle::ConnectionManager, to don't store the StateMachine anymore.
+  void registerCloseCallback(CloseCallback* callback);
 
   DuplexConnection* getConnection();
 
+  // Has active requests?
+  bool hasStreams() const;
+
  private:
-  void connect(yarpl::Reference<FrameTransport>, ProtocolVersion);
+  // connection scope signals
+  void onKeepAliveFrame(
+      ResumePosition resumePosition,
+      std::unique_ptr<folly::IOBuf> data,
+      bool keepAliveRespond);
+  void onMetadataPushFrame(std::unique_ptr<folly::IOBuf> metadata);
+  void onResumeOkFrame(ResumePosition resumePosition);
+  void onErrorFrame(StreamId streamId, ErrorCode errorCode, Payload payload);
+
+  // stream scope signals
+  void onRequestNFrame(StreamId streamId, uint32_t requestN);
+  void onCancelFrame(StreamId streamId);
+  void onPayloadFrame(
+      StreamId streamId,
+      Payload payload,
+      bool flagsFollows,
+      bool flagsComplete,
+      bool flagsNext);
+
+  void onRequestStreamFrame(
+      StreamId streamId,
+      uint32_t requestN,
+      Payload payload,
+      bool flagsFollows);
+  void onRequestChannelFrame(
+      StreamId streamId,
+      uint32_t requestN,
+      Payload payload,
+      bool flagsComplete,
+      bool flagsNext,
+      bool flagsFollows);
+  void
+  onRequestResponseFrame(StreamId streamId, Payload payload, bool flagsFollows);
+  void
+  onFireAndForgetFrame(StreamId streamId, Payload payload, bool flagsFollows);
+  void onSetupFrame();
+  void onResumeFrame();
+  void onReservedFrame();
+  void onLeaseFrame();
+  void onExtFrame();
+  void onUnexpectedFrame(StreamId streamId);
+
+  std::shared_ptr<StreamStateMachineBase> getStreamStateMachine(
+      StreamId streamId);
+
+  void connect(std::shared_ptr<FrameTransport>);
 
   /// Terminate underlying connection and connect new connection
   void reconnect(
-      yarpl::Reference<FrameTransport>,
+      std::shared_ptr<FrameTransport>,
       std::unique_ptr<ClientResumeStatusCallback>);
 
   void setResumable(bool);
@@ -180,19 +234,17 @@ class RSocketStateMachine final
 
   uint32_t getKeepaliveTime() const;
 
-  void setFrameSerializer(std::unique_ptr<FrameSerializer>);
+  void sendPendingFrames() override;
 
-  void sendPendingFrames();
+  // Should buffer the frame if the state machine is disconnected or in the
+  // process of resuming.
+  bool shouldQueue() override;
+  RSocketStats& stats() override {
+    return *stats_;
+  }
 
-  /// Send a frame to the output.  Will buffer the frame if the state machine is
-  /// disconnected or in the process of resuming.
-  void outputFrameOrEnqueue(std::unique_ptr<folly::IOBuf>);
-
-  template <typename T>
-  void outputFrameOrEnqueue(T&& frame) {
-    VLOG(3) << mode_ << " Out: " << frame;
-    outputFrameOrEnqueue(
-        frameSerializer_->serializeOut(std::forward<T>(frame)));
+  FrameSerializer& serializer() override {
+    return *frameSerializer_;
   }
 
   template <typename TFrame>
@@ -206,31 +258,11 @@ class RSocketStateMachine final
     return false;
   }
 
-  template <typename TFrame>
-  bool deserializeFrameOrError(
-      bool resumable,
-      TFrame& frame,
-      std::unique_ptr<folly::IOBuf> buf) {
-    if (frameSerializer_->deserializeFrom(frame, std::move(buf), resumable)) {
-      return true;
-    }
-    closeWithError(Frame_ERROR::connectionError("Invalid frame"));
-    return false;
-  }
-
-  /// Performs the same actions as ::endStream without propagating closure
-  /// signal to the underlying connection.
-  ///
-  /// The call is idempotent and returns false iff a stream has not been found.
-  bool endStreamInternal(StreamId streamId, StreamCompletionSignal signal);
-
   // FrameProcessor.
   void processFrame(std::unique_ptr<folly::IOBuf>) override;
   void onTerminal(folly::exception_wrapper) override;
 
-  void handleConnectionFrame(FrameType, std::unique_ptr<folly::IOBuf>);
-  void handleStreamFrame(StreamId, FrameType, std::unique_ptr<folly::IOBuf>);
-  void handleUnknownStream(StreamId, FrameType, std::unique_ptr<folly::IOBuf>);
+  void handleFrame(StreamId, FrameType, std::unique_ptr<folly::IOBuf>);
 
   void closeStreams(StreamCompletionSignal);
   void closeFrameTransport(folly::exception_wrapper);
@@ -238,26 +270,42 @@ class RSocketStateMachine final
   void sendKeepalive(FrameFlags, std::unique_ptr<folly::IOBuf>);
 
   void resumeFromPosition(ResumePosition);
-  void outputFrame(std::unique_ptr<folly::IOBuf>);
+  void outputFrame(std::unique_ptr<folly::IOBuf>) override;
 
   void writeNewStream(
       StreamId streamId,
       StreamType streamType,
       uint32_t initialRequestN,
+      Payload payload) override;
+
+  std::shared_ptr<yarpl::flowable::Subscriber<Payload>> onNewStreamReady(
+      StreamId streamId,
+      StreamType streamType,
       Payload payload,
-      bool completed) override;
-  void writeRequestN(Frame_REQUEST_N&&) override;
-  void writeCancel(Frame_CANCEL&&) override;
-
-  void writePayload(Frame_PAYLOAD&&) override;
-  void writeError(Frame_ERROR&&) override;
-
-  void onStreamClosed(StreamId streamId, StreamCompletionSignal signal)
+      std::shared_ptr<yarpl::flowable::Subscriber<Payload>> response) override;
+  void onNewStreamReady(
+      StreamId streamId,
+      StreamType streamType,
+      Payload payload,
+      std::shared_ptr<yarpl::single::SingleObserver<Payload>> response)
       override;
 
+  void onStreamClosed(StreamId) override;
+
   bool ensureOrAutodetectFrameSerializer(const folly::IOBuf& firstFrame);
+  bool ensureNotInResumption();
 
   size_t getConsumerAllowance(StreamId) const;
+
+  void setProtocolVersionOrThrow(
+      ProtocolVersion version,
+      const std::shared_ptr<FrameTransport>& transport);
+
+  bool isNewStreamId(StreamId streamId);
+  bool registerNewPeerStreamId(StreamId streamId);
+  StreamId getNextStreamId();
+
+  void setNextStreamId(StreamId streamId);
 
   /// Client/server mode this state machine is operating in.
   const RSocketMode mode_;
@@ -273,14 +321,17 @@ class RSocketStateMachine final
 
   std::shared_ptr<RSocketStats> stats_;
 
-  /// Per-stream frame buffer between the state machine and the FrameTransport.
-  StreamState streamState_;
+  /// Map of all individual stream state machines.
+  std::unordered_map<StreamId, std::shared_ptr<StreamStateMachineBase>>
+      streams_;
+  StreamId nextStreamId_;
+  StreamId lastPeerStreamId_{0};
 
   // Manages all state needed for warm/cold resumption.
   std::shared_ptr<ResumeManager> resumeManager_;
 
-  std::shared_ptr<RSocketResponder> requestResponder_;
-  yarpl::Reference<FrameTransport> frameTransport_;
+  const std::shared_ptr<RSocketResponderCore> requestResponder_;
+  std::shared_ptr<FrameTransport> frameTransport_;
   std::unique_ptr<FrameSerializer> frameSerializer_;
 
   const std::unique_ptr<KeepaliveTimer> keepaliveTimer_;
@@ -288,11 +339,11 @@ class RSocketStateMachine final
   std::unique_ptr<ClientResumeStatusCallback> resumeCallback_;
   std::shared_ptr<ColdResumeHandler> coldResumeHandler_;
 
-  StreamsFactory streamsFactory_;
-
   std::shared_ptr<RSocketConnectionEvents> connectionEvents_;
 
-  /// Back reference to the set that's holding this state machine.
-  std::weak_ptr<ConnectionSet> connectionSet_;
+  CloseCallback* closeCallback_{nullptr};
+
+  friend class RSocketStateMachineTest;
 };
-}
+
+} // namespace rsocket

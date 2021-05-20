@@ -1,75 +1,71 @@
-// Copyright 2004-present Facebook. All Rights Reserved.
+// Copyright (c) Facebook, Inc. and its affiliates.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #include "rsocket/statemachine/ChannelRequester.h"
 
 namespace rsocket {
 
-using namespace yarpl;
-using namespace yarpl::flowable;
-
 void ChannelRequester::onSubscribe(
-    Reference<Subscription> subscription) noexcept {
+    std::shared_ptr<yarpl::flowable::Subscription> subscription) {
   CHECK(!requested_);
   publisherSubscribe(std::move(subscription));
+
+  if (hasInitialRequest_) {
+    initStream(std::move(request_));
+  }
 }
 
-void ChannelRequester::onNext(Payload request) noexcept {
+void ChannelRequester::onNext(Payload request) {
   if (!requested_) {
-    requested_ = true;
-
-    size_t initialN =
-        initialResponseAllowance_.consumeUpTo(Frame_REQUEST_N::kMaxRequestN);
-    size_t remainingN = initialResponseAllowance_.consumeAll();
-    // Send as much as possible with the initial request.
-    CHECK_GE(Frame_REQUEST_N::kMaxRequestN, initialN);
-    newStream(
-        StreamType::CHANNEL,
-        static_cast<uint32_t>(initialN),
-        std::move(request),
-        false);
-    // We must inform ConsumerBase about an implicit allowance we have
-    // requested from the remote end.
-    ConsumerBase::addImplicitAllowance(initialN);
-    // Pump the remaining allowance into the ConsumerBase _after_ sending the
-    // initial request.
-    if (remainingN) {
-      ConsumerBase::generateRequest(remainingN);
-    }
+    initStream(std::move(request));
     return;
   }
 
-  checkPublisherOnNext();
   if (!publisherClosed()) {
-    writePayload(std::move(request), false);
+    writePayload(std::move(request));
   }
 }
 
 // TODO: consolidate code in onCompleteImpl, onErrorImpl, cancelImpl
-void ChannelRequester::onComplete() noexcept {
+void ChannelRequester::onComplete() {
   if (!requested_) {
-    closeStream(StreamCompletionSignal::CANCEL);
+    endStream(StreamCompletionSignal::CANCEL);
+    removeFromWriter();
     return;
   }
   if (!publisherClosed()) {
     publisherComplete();
-    completeStream();
+    writeComplete();
     tryCompleteChannel();
   }
 }
 
-void ChannelRequester::onError(folly::exception_wrapper ex) noexcept {
+void ChannelRequester::onError(folly::exception_wrapper ex) {
   if (!requested_) {
-    closeStream(StreamCompletionSignal::CANCEL);
+    endStream(StreamCompletionSignal::CANCEL);
+    removeFromWriter();
     return;
   }
   if (!publisherClosed()) {
     publisherComplete();
-    applicationError(ex.get_exception()->what());
+    endStream(StreamCompletionSignal::ERROR);
+    writeApplicationError(ex.get_exception()->what());
     tryCompleteChannel();
   }
 }
 
-void ChannelRequester::request(int64_t n) noexcept {
+void ChannelRequester::request(int64_t n) {
   if (!requested_) {
     // The initial request has not been sent out yet, hence we must accumulate
     // the unsynchronised allowance, portion of which will be sent out with
@@ -81,13 +77,46 @@ void ChannelRequester::request(int64_t n) noexcept {
   ConsumerBase::generateRequest(n);
 }
 
-void ChannelRequester::cancel() noexcept {
+void ChannelRequester::cancel() {
   if (!requested_) {
-    closeStream(StreamCompletionSignal::CANCEL);
+    endStream(StreamCompletionSignal::CANCEL);
+    removeFromWriter();
     return;
   }
   cancelConsumer();
-  cancelStream();
+  writeCancel();
+  tryCompleteChannel();
+}
+
+void ChannelRequester::handlePayload(
+    Payload&& payload,
+    bool flagsComplete,
+    bool flagsNext,
+    bool flagsFollows) {
+  CHECK(requested_);
+  bool finalComplete = processFragmentedPayload(
+      std::move(payload), flagsNext, flagsComplete, flagsFollows);
+
+  if (finalComplete) {
+    completeConsumer();
+    tryCompleteChannel();
+  }
+}
+
+void ChannelRequester::handleRequestN(uint32_t n) {
+  CHECK(requested_);
+  PublisherBase::processRequestN(n);
+}
+
+void ChannelRequester::handleError(folly::exception_wrapper ew) {
+  CHECK(requested_);
+  errorConsumer(std::move(ew));
+  terminatePublisher();
+}
+
+void ChannelRequester::handleCancel() {
+  CHECK(requested_);
+  terminatePublisher();
   tryCompleteChannel();
 }
 
@@ -96,39 +125,31 @@ void ChannelRequester::endStream(StreamCompletionSignal signal) {
   ConsumerBase::endStream(signal);
 }
 
+void ChannelRequester::initStream(Payload&& request) {
+  requested_ = true;
+
+  const size_t initialN = initialResponseAllowance_.consumeUpTo(kMaxRequestN);
+  const size_t remainingN = initialResponseAllowance_.consumeAll();
+
+  // Send as much as possible with the initial request.
+  CHECK_GE(static_cast<size_t>(kMaxRequestN), initialN);
+  newStream(
+      StreamType::CHANNEL, static_cast<uint32_t>(initialN), std::move(request));
+  // We must inform ConsumerBase about an implicit allowance we have
+  // requested from the remote end.
+  ConsumerBase::addImplicitAllowance(initialN);
+  // Pump the remaining allowance into the ConsumerBase _after_ sending the
+  // initial request.
+  if (remainingN) {
+    ConsumerBase::generateRequest(remainingN);
+  }
+}
+
 void ChannelRequester::tryCompleteChannel() {
   if (publisherClosed() && consumerClosed()) {
-    closeStream(StreamCompletionSignal::COMPLETE);
+    endStream(StreamCompletionSignal::COMPLETE);
+    removeFromWriter();
   }
 }
 
-void ChannelRequester::handlePayload(
-    Payload&& payload,
-    bool complete,
-    bool next) {
-  CHECK(requested_);
-  processPayload(std::move(payload), next);
-
-  if (complete) {
-    completeConsumer();
-    tryCompleteChannel();
-  }
-}
-
-void ChannelRequester::handleError(folly::exception_wrapper ex) {
-  CHECK(requested_);
-  errorConsumer(std::move(ex));
-  tryCompleteChannel();
-}
-
-void ChannelRequester::handleRequestN(uint32_t n) {
-  CHECK(requested_);
-  PublisherBase::processRequestN(n);
-}
-
-void ChannelRequester::handleCancel() {
-  CHECK(requested_);
-  publisherComplete();
-  tryCompleteChannel();
-}
-}
+} // namespace rsocket

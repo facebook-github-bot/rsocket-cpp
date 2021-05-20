@@ -1,8 +1,18 @@
-// Copyright 2004-present Facebook. All Rights Reserved.
+// Copyright (c) Facebook, Inc. and its affiliates.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #pragma once
-
-#include <iosfwd>
 
 #include "rsocket/statemachine/ConsumerBase.h"
 #include "rsocket/statemachine/PublisherBase.h"
@@ -22,31 +32,30 @@ class ChannelResponder : public ConsumerBase,
       : ConsumerBase(std::move(writer), streamId),
         PublisherBase(initialRequestN) {}
 
-  void processInitialFrame(Frame_REQUEST_CHANNEL&&);
+  void onSubscribe(std::shared_ptr<yarpl::flowable::Subscription>) override;
+  void onNext(Payload) override;
+  void onComplete() override;
+  void onError(folly::exception_wrapper) override;
 
- private:
-  void onSubscribe(yarpl::Reference<yarpl::flowable::Subscription>
-                       subscription) noexcept override;
-  void onNext(Payload) noexcept override;
-  void onComplete() noexcept override;
-  void onError(folly::exception_wrapper) noexcept override;
+  void request(int64_t) override;
+  void cancel() override;
 
-  void request(int64_t n) noexcept override;
-  void cancel() noexcept override;
-
-  void handlePayload(Payload&& payload, bool complete, bool flagsNext) override;
-  void handleRequestN(uint32_t n) override;
-  void handleCancel() override;
-  void handleError(folly::exception_wrapper ex) override;
-
-  void onNextPayloadFrame(
-      uint32_t requestN,
+  void handlePayload(
       Payload&& payload,
-      bool complete,
-      bool next);
+      bool flagsComplete,
+      bool flagsNext,
+      bool flagsFollows) override;
+
+  void handleRequestN(uint32_t) override;
+  void handleError(folly::exception_wrapper) override;
+  void handleCancel() override;
 
   void endStream(StreamCompletionSignal) override;
 
+ private:
   void tryCompleteChannel();
+
+  bool newStream_{true};
 };
-}
+
+} // namespace rsocket

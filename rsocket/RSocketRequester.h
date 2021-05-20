@@ -1,4 +1,16 @@
-// Copyright 2004-present Facebook. All Rights Reserved.
+// Copyright (c) Facebook, Inc. and its affiliates.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #pragma once
 
@@ -51,7 +63,7 @@ class RSocketRequester {
    * Interaction model details can be found at
    * https://github.com/ReactiveSocket/reactivesocket/blob/master/Protocol.md#request-stream
    */
-  virtual yarpl::Reference<yarpl::flowable::Flowable<rsocket::Payload>>
+  virtual std::shared_ptr<yarpl::flowable::Flowable<rsocket::Payload>>
   requestStream(rsocket::Payload request);
 
   /**
@@ -60,9 +72,20 @@ class RSocketRequester {
    * Interaction model details can be found at
    * https://github.com/ReactiveSocket/reactivesocket/blob/master/Protocol.md#request-channel
    */
-  virtual yarpl::Reference<yarpl::flowable::Flowable<rsocket::Payload>>
+  virtual std::shared_ptr<yarpl::flowable::Flowable<rsocket::Payload>>
   requestChannel(
-      yarpl::Reference<yarpl::flowable::Flowable<rsocket::Payload>> requests);
+      std::shared_ptr<yarpl::flowable::Flowable<rsocket::Payload>> requests);
+
+  /**
+   * As requestStream function accepts an initial request, this version of
+   * requestChannel also accepts an initial request.
+   * @see requestChannel
+   * @see requestStream
+   */
+  virtual std::shared_ptr<yarpl::flowable::Flowable<rsocket::Payload>>
+  requestChannel(
+      Payload request,
+      std::shared_ptr<yarpl::flowable::Flowable<rsocket::Payload>> requests);
 
   /**
    * Send a single request and get a single response.
@@ -70,7 +93,7 @@ class RSocketRequester {
    * Interaction model details can be found at
    * https://github.com/ReactiveSocket/reactivesocket/blob/master/Protocol.md#stream-sequences-request-response
    */
-  virtual yarpl::Reference<yarpl::single::Single<rsocket::Payload>>
+  virtual std::shared_ptr<yarpl::single::Single<rsocket::Payload>>
   requestResponse(rsocket::Payload request);
 
   /**
@@ -85,7 +108,7 @@ class RSocketRequester {
    * Interaction model details can be found at
    * https://github.com/ReactiveSocket/reactivesocket/blob/master/Protocol.md#request-fire-n-forget
    */
-  virtual yarpl::Reference<yarpl::single::Single<void>> fireAndForget(
+  virtual std::shared_ptr<yarpl::single::Single<void>> fireAndForget(
       rsocket::Payload request);
 
   /**
@@ -93,15 +116,16 @@ class RSocketRequester {
    */
   virtual void metadataPush(std::unique_ptr<folly::IOBuf> metadata);
 
-  /**
-   * To be used only temporarily to check the transport's status.
-   */
-  virtual DuplexConnection* getConnection();
-
   virtual void closeSocket();
 
  protected:
+  virtual std::shared_ptr<yarpl::flowable::Flowable<rsocket::Payload>>
+  requestChannel(
+      Payload request,
+      bool hasInitialRequest,
+      std::shared_ptr<yarpl::flowable::Flowable<rsocket::Payload>> requests);
+
   std::shared_ptr<rsocket::RSocketStateMachine> stateMachine_;
   folly::EventBase* eventBase_;
 };
-}
+} // namespace rsocket

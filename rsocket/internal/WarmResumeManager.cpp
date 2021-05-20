@@ -1,4 +1,16 @@
-// Copyright 2004-present Facebook. All Rights Reserved.
+// Copyright (c) Facebook, Inc. and its affiliates.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #include "rsocket/internal/WarmResumeManager.h"
 
@@ -29,7 +41,7 @@ void WarmResumeManager::trackSentFrame(
     size_t consumerAllowance) {
   if (shouldTrackFrame(frameType)) {
     // TODO(tmont): this could be expensive, find a better way to get length
-    auto frameDataLength = serializedFrame.computeChainDataLength();
+    const auto frameDataLength = serializedFrame.computeChainDataLength();
 
     VLOG(6) << "Track sent frame " << frameType
             << " Allowance: " << consumerAllowance;
@@ -90,8 +102,8 @@ void WarmResumeManager::addFrame(
 void WarmResumeManager::evictFrame() {
   DCHECK(!frames_.empty());
 
-  auto position = frames_.size() > 1 ? std::next(frames_.begin())->first
-                                     : lastSentPosition_;
+  const auto position = frames_.size() > 1 ? std::next(frames_.begin())->first
+                                           : lastSentPosition_;
   resetUpToPosition(position);
 }
 
@@ -102,7 +114,7 @@ void WarmResumeManager::clearFrames(ResumePosition position) {
   DCHECK(position <= lastSentPosition_);
   DCHECK(position >= firstSentPosition_);
 
-  auto end = std::lower_bound(
+  const auto end = std::lower_bound(
       frames_.begin(),
       frames_.end(),
       position,
@@ -110,7 +122,7 @@ void WarmResumeManager::clearFrames(ResumePosition position) {
         return pair.first < pos;
       });
   DCHECK(end == frames_.end() || end->first >= firstSentPosition_);
-  auto pos = end == frames_.end() ? position : end->first;
+  const auto pos = end == frames_.end() ? position : end->first;
   stats_->resumeBufferChanged(
       -static_cast<int>(std::distance(frames_.begin(), end)),
       -static_cast<int>(pos - firstSentPosition_));
@@ -146,4 +158,16 @@ void WarmResumeManager::sendFramesFromPosition(
   }
 }
 
-} // reactivesocket
+std::shared_ptr<ResumeManager> ResumeManager::makeEmpty() {
+  class Empty : public WarmResumeManager {
+   public:
+    Empty() : WarmResumeManager(nullptr, 0) {}
+    bool shouldTrackFrame(FrameType) const override {
+      return false;
+    }
+  };
+
+  return std::make_shared<Empty>();
+}
+
+} // namespace rsocket

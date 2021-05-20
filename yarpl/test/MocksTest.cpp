@@ -1,4 +1,16 @@
-// Copyright 2004-present Facebook. All Rights Reserved.
+// Copyright (c) Facebook, Inc. and its affiliates.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #include "yarpl/test_utils/Mocks.h"
 
@@ -15,12 +27,12 @@ TEST(MocksTest, SelfManagedMocks) {
   int value = 42;
 
   MockFlowable<int> flowable;
-  auto subscription = yarpl::make_ref<yarpl::mocks::MockSubscription>();
-  auto subscriber = yarpl::make_ref<yarpl::mocks::MockSubscriber<int>>(0);
+  auto subscription = std::make_shared<yarpl::mocks::MockSubscription>();
+  auto subscriber = std::make_shared<yarpl::mocks::MockSubscriber<int>>(0);
   {
     InSequence dummy;
     EXPECT_CALL(flowable, subscribe_(_))
-        .WillOnce(Invoke([&](yarpl::Reference<Subscriber<int>> consumer) {
+        .WillOnce(Invoke([&](std::shared_ptr<Subscriber<int>> consumer) {
           consumer->onSubscribe(subscription);
         }));
     EXPECT_CALL(*subscriber, onSubscribe_(_));

@@ -1,8 +1,22 @@
-// Copyright 2004-present Facebook. All Rights Reserved.
+// Copyright (c) Facebook, Inc. and its affiliates.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #pragma once
 
 #include <deque>
+
+#include <folly/lang/Assume.h>
 
 #include "rsocket/RSocketStats.h"
 #include "rsocket/ResumeManager.h"
@@ -58,20 +72,22 @@ class WarmResumeManager : public ResumeManager {
 
   // No action to perform for WarmResumeManager
   void onStreamOpen(StreamId, RequestOriginator, std::string, StreamType)
-      override{};
+      override {}
 
   // No action to perform for WarmResumeManager
-  void onStreamClosed(StreamId) override{};
+  void onStreamClosed(StreamId) override {}
 
-  const StreamResumeInfos& getStreamResumeInfos() override {
+  const StreamResumeInfos& getStreamResumeInfos() const override {
     LOG(FATAL) << "Not Implemented for Warm Resumption";
+    folly::assume_unreachable();
   }
 
-  StreamId getLargestUsedStreamId() override {
+  StreamId getLargestUsedStreamId() const override {
     LOG(FATAL) << "Not Implemented for Warm Resumption";
+    folly::assume_unreachable();
   }
 
-  size_t size() {
+  size_t size() const {
     return size_;
   }
 
@@ -82,7 +98,7 @@ class WarmResumeManager : public ResumeManager {
   // Called before clearing cached frames to update stats.
   void clearFrames(ResumePosition position);
 
-  std::shared_ptr<RSocketStats> stats_;
+  const std::shared_ptr<RSocketStats> stats_;
 
   // Start position of the send buffer queue
   ResumePosition firstSentPosition_{0};
@@ -97,4 +113,4 @@ class WarmResumeManager : public ResumeManager {
   const size_t capacity_;
   size_t size_{0};
 };
-}
+} // namespace rsocket

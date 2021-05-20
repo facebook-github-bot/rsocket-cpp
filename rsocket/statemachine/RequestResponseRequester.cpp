@@ -1,4 +1,16 @@
-// Copyright 2004-present Facebook. All Rights Reserved.
+// Copyright (c) Facebook, Inc. and its affiliates.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #include "rsocket/statemachine/RequestResponseRequester.h"
 
@@ -7,26 +19,23 @@
 
 namespace rsocket {
 
-using namespace yarpl;
-using namespace yarpl::flowable;
-
 void RequestResponseRequester::subscribe(
-    yarpl::Reference<yarpl::single::SingleObserver<Payload>> subscriber) {
-  DCHECK(!isTerminated());
+    std::shared_ptr<yarpl::single::SingleObserver<Payload>> subscriber) {
+  DCHECK(state_ != State::CLOSED);
   DCHECK(!consumingSubscriber_);
   consumingSubscriber_ = std::move(subscriber);
-  consumingSubscriber_->onSubscribe(this->ref_from_this(this));
+  consumingSubscriber_->onSubscribe(shared_from_this());
 
   if (state_ == State::NEW) {
     state_ = State::REQUESTED;
     newStream(StreamType::REQUEST_RESPONSE, 1, std::move(initialPayload_));
-  } else {
-    if (auto subscriber = std::move(consumingSubscriber_)) {
-      subscriber->onError(
-          std::runtime_error("cannot request more than 1 item"));
-    }
-    closeStream(StreamCompletionSignal::ERROR);
+    return;
   }
+
+  if (auto subscriber = std::move(consumingSubscriber_)) {
+    subscriber->onError(std::runtime_error("cannot request more than 1 item"));
+  }
+  removeFromWriter();
 }
 
 void RequestResponseRequester::cancel() noexcept {
@@ -34,17 +43,17 @@ void RequestResponseRequester::cancel() noexcept {
   switch (state_) {
     case State::NEW:
       state_ = State::CLOSED;
-      closeStream(StreamCompletionSignal::CANCEL);
+      removeFromWriter();
       break;
     case State::REQUESTED: {
       state_ = State::CLOSED;
-      cancelStream();
-      closeStream(StreamCompletionSignal::CANCEL);
+      writeCancel();
+      removeFromWriter();
     } break;
     case State::CLOSED:
       break;
   }
-  consumingSubscriber_ = nullptr;
+  consumingSubscriber_.reset();
 }
 
 void RequestResponseRequester::endStream(StreamCompletionSignal signal) {
@@ -66,8 +75,7 @@ void RequestResponseRequester::endStream(StreamCompletionSignal signal) {
   }
 }
 
-void RequestResponseRequester::handleError(
-    folly::exception_wrapper errorPayload) {
+void RequestResponseRequester::handleError(folly::exception_wrapper ew) {
   switch (state_) {
     case State::NEW:
       // Cannot receive a frame before sending the initial request.
@@ -76,9 +84,9 @@ void RequestResponseRequester::handleError(
     case State::REQUESTED:
       state_ = State::CLOSED;
       if (auto subscriber = std::move(consumingSubscriber_)) {
-        subscriber->onError(errorPayload);
+        subscriber->onError(std::move(ew));
       }
-      closeStream(StreamCompletionSignal::ERROR);
+      removeFromWriter();
       break;
     case State::CLOSED:
       break;
@@ -87,34 +95,41 @@ void RequestResponseRequester::handleError(
 
 void RequestResponseRequester::handlePayload(
     Payload&& payload,
-    bool complete,
-    bool flagsNext) {
-  switch (state_) {
-    case State::NEW:
-      // Cannot receive a frame before sending the initial request.
-      CHECK(false);
-      break;
-    case State::REQUESTED:
-      state_ = State::CLOSED;
-      break;
-    case State::CLOSED:
-      // should not be receiving frames when closed
-      // if we ended up here, we broke some internal invariant of the class
-      CHECK(false);
-      break;
-  }
+    bool /*flagsComplete*/,
+    bool flagsNext,
+    bool flagsFollows) {
+  // (State::NEW) Cannot receive a frame before sending the initial request.
+  // (State::CLOSED) should not be receiving frames when closed
+  // if we fail here, we broke some internal invariant of the class
+  CHECK(state_ == State::REQUESTED);
 
-  if (payload || flagsNext) {
-    consumingSubscriber_->onSuccess(std::move(payload));
-    consumingSubscriber_ = nullptr;
-  } else if (!complete) {
-    errorStream("payload, NEXT or COMPLETE flag expected");
+  payloadFragments_.addPayload(std::move(payload), flagsNext, false);
+
+  if (flagsFollows) {
+    // there will be more fragments to come
     return;
   }
-  closeStream(StreamCompletionSignal::COMPLETE);
+
+  bool finalFlagsNext, finalFlagsComplete;
+  Payload finalPayload;
+
+  std::tie(finalPayload, finalFlagsNext, finalFlagsComplete) =
+      payloadFragments_.consumePayloadAndFlags();
+
+  state_ = State::CLOSED;
+
+  if (finalPayload || finalFlagsNext) {
+    consumingSubscriber_->onSuccess(std::move(finalPayload));
+    consumingSubscriber_ = nullptr;
+  } else if (!finalFlagsComplete) {
+    writeInvalidError("Payload, NEXT or COMPLETE flag expected");
+    endStream(StreamCompletionSignal::ERROR);
+  }
+  removeFromWriter();
 }
 
 size_t RequestResponseRequester::getConsumerAllowance() const {
   return (state_ == State::REQUESTED) ? 1 : 0;
 }
-}
+
+} // namespace rsocket

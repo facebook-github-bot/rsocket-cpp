@@ -1,0 +1,40 @@
+// Copyright (c) Facebook, Inc. and its affiliates.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+#include "HelloStreamRequestHandler.h"
+#include <folly/Conv.h>
+#include <sstream>
+#include "yarpl/Flowable.h"
+
+using namespace yarpl::flowable;
+
+namespace rsocket {
+namespace tests {
+/// Handles a new inbound Stream requested by the other end.
+std::shared_ptr<Flowable<rsocket::Payload>>
+HelloStreamRequestHandler::handleRequestStream(
+    rsocket::Payload request,
+    rsocket::StreamId) {
+  VLOG(3) << "HelloStreamRequestHandler.handleRequestStream " << request;
+
+  // string from payload data
+  auto requestString = request.moveDataToString();
+
+  return Flowable<>::range(1, 10)->map(
+      [name = std::move(requestString)](int64_t v) {
+        return Payload(folly::to<std::string>(v), "metadata");
+      });
+}
+} // namespace tests
+} // namespace rsocket

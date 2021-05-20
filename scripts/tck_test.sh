@@ -1,5 +1,7 @@
 #!/bin/bash
-
+#
+# Copyright 2004-present Facebook. All Rights Reserved.
+#
 if [ "$#" -ne 4 ]; then
     echo "Illegal number of parameters - $#"
     exit 1
@@ -48,11 +50,11 @@ if [[ "$OSTYPE" == "darwin"* ]]; then
   timeout='gtimeout'
 fi
 
-java_server="java -jar rsocket-tck-drivers-0.9.10.jar --server --host localhost --port 9898 --file tck-test/servertest.txt"
-java_client="java -jar rsocket-tck-drivers-0.9.10.jar --client --host localhost --port 9898 --file tck-test/clienttest.txt"
+java_server="java -jar rsocket-tck-drivers-0.9.10.jar --server --host localhost --port 9898 --file rsocket/tck-test/servertest.txt"
+java_client="java -jar rsocket-tck-drivers-0.9.10.jar --client --host localhost --port 9898 --file rsocket/tck-test/clienttest.txt"
 
-cpp_server="./build/tckserver -test_file tck-test/servertest.txt -rs_use_protocol_version 1.0"
-cpp_client="./build/tckclient -test_file tck-test/clienttest.txt -rs_use_protocol_version 1.0"
+cpp_server="./build/tckserver -test_file rsocket/tck-test/servertest.txt -rs_use_protocol_version 1.0"
+cpp_client="./build/tckclient -test_file rsocket/tck-test/clienttest.txt -rs_use_protocol_version 1.0"
 
 server="${server_lang}_server"
 client="${client_lang}_client"

@@ -1,4 +1,16 @@
-// Copyright 2004-present Facebook. All Rights Reserved.
+// Copyright (c) Facebook, Inc. and its affiliates.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #include "rsocket/framing/FrameTransportImpl.h"
 
@@ -36,7 +48,7 @@ void FrameTransportImpl::connect() {
     // will create a hard reference for that case and keep the object alive
     // until setInput method returns
     auto connectionCopy = connection_;
-    connectionCopy->setInput(this->ref_from_this(this));
+    connectionCopy->setInput(shared_from_this());
   }
 }
 
@@ -56,8 +68,7 @@ void FrameTransportImpl::close() {
   if (!connection_) {
     return;
   }
-
-  auto oldConnection = std::move(connection_);
+  connection_.reset();
 
   if (auto subscription = std::move(connectionInputSub_)) {
     subscription->cancel();
@@ -65,7 +76,7 @@ void FrameTransportImpl::close() {
 }
 
 void FrameTransportImpl::onSubscribe(
-    yarpl::Reference<Subscription> subscription) {
+    std::shared_ptr<Subscription> subscription) {
   if (!connection_) {
     return;
   }
@@ -77,8 +88,10 @@ void FrameTransportImpl::onSubscribe(
 }
 
 void FrameTransportImpl::onNext(std::unique_ptr<folly::IOBuf> frame) {
-  CHECK(frameProcessor_);
-  frameProcessor_->processFrame(std::move(frame));
+  // Copy in case frame processing calls through to close().
+  if (auto const processor = frameProcessor_) {
+    processor->processFrame(std::move(frame));
+  }
 }
 
 void FrameTransportImpl::terminateProcessor(folly::exception_wrapper ex) {
@@ -113,6 +126,11 @@ void FrameTransportImpl::outputFrameOrDrop(
   if (connection_) {
     connection_->send(std::move(frame));
   }
+}
+
+bool FrameTransportImpl::isConnectionFramed() const {
+  CHECK(connection_);
+  return connection_->isFramed();
 }
 
 } // namespace rsocket

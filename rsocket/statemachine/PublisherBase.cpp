@@ -1,10 +1,20 @@
-// Copyright 2004-present Facebook. All Rights Reserved.
+// Copyright (c) Facebook, Inc. and its affiliates.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #include "rsocket/statemachine/PublisherBase.h"
 
 #include <glog/logging.h>
-
-#include "rsocket/statemachine/RSocketStateMachine.h"
 
 namespace rsocket {
 
@@ -12,7 +22,7 @@ PublisherBase::PublisherBase(uint32_t initialRequestN)
     : initialRequestN_(initialRequestN) {}
 
 void PublisherBase::publisherSubscribe(
-    yarpl::Reference<yarpl::flowable::Subscription> subscription) {
+    std::shared_ptr<yarpl::flowable::Subscription> subscription) {
   if (state_ == State::CLOSED) {
     subscription->cancel();
     return;
@@ -22,12 +32,6 @@ void PublisherBase::publisherSubscribe(
   if (initialRequestN_) {
     producingSubscription_->request(initialRequestN_.consumeAll());
   }
-}
-
-void PublisherBase::checkPublisherOnNext() {
-  // we are either responding and publisherSubscribe method was called
-  // or we are already terminated
-  CHECK((state_ == State::RESPONDING) == !!producingSubscription_);
 }
 
 void PublisherBase::publisherComplete() {
@@ -40,12 +44,12 @@ bool PublisherBase::publisherClosed() const {
 }
 
 void PublisherBase::processRequestN(uint32_t requestN) {
-  if (!requestN || state_ == State::CLOSED) {
+  if (requestN == 0 || state_ == State::CLOSED) {
     return;
   }
 
-  // we might not have the subscription set yet as there can be REQUEST_N
-  // frames scheduled on the executor before onSubscribe method
+  // We might not have the subscription set yet as there can be REQUEST_N frames
+  // scheduled on the executor before onSubscribe method.
   if (producingSubscription_) {
     producingSubscription_->request(requestN);
   } else {
@@ -59,4 +63,5 @@ void PublisherBase::terminatePublisher() {
     subscription->cancel();
   }
 }
-}
+
+} // namespace rsocket

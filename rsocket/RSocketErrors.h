@@ -1,7 +1,20 @@
-// Copyright 2004-present Facebook. All Rights Reserved.
+// Copyright (c) Facebook, Inc. and its affiliates.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #pragma once
 
+#include <stdexcept>
 #include <string>
 
 namespace rsocket {
@@ -19,7 +32,7 @@ class RSocketError : public std::runtime_error {
    * https://github.com/ReactiveSocket/reactivesocket/blob/master/Protocol.md#error-codes
    * @return
    */
-  virtual int getErrorCode() = 0;
+  virtual int getErrorCode() const = 0;
 };
 
 /**
@@ -29,7 +42,7 @@ class InvalidSetupError : public RSocketError {
  public:
   using RSocketError::RSocketError;
 
-  int getErrorCode() override {
+  int getErrorCode() const override {
     return 0x00000001;
   }
 
@@ -45,7 +58,7 @@ class UnsupportedSetupError : public RSocketError {
  public:
   using RSocketError::RSocketError;
 
-  int getErrorCode() override {
+  int getErrorCode() const override {
     return 0x00000002;
   }
 
@@ -61,7 +74,7 @@ class RejectedSetupError : public RSocketError {
  public:
   using RSocketError::RSocketError;
 
-  int getErrorCode() override {
+  int getErrorCode() const override {
     return 0x00000003;
   }
 
@@ -77,7 +90,7 @@ class RejectedResumeError : public RSocketError {
  public:
   using RSocketError::RSocketError;
 
-  int getErrorCode() override {
+  int getErrorCode() const override {
     return 0x00000004;
   }
 
@@ -93,7 +106,7 @@ class ConnectionError : public RSocketError {
  public:
   using RSocketError::RSocketError;
 
-  int getErrorCode() override {
+  int getErrorCode() const override {
     return 0x00000101;
   }
 
@@ -103,13 +116,13 @@ class ConnectionError : public RSocketError {
 };
 
 /**
-* Error Code: CONNECTION_CLOSE 0x00000102
-*/
+ * Error Code: CONNECTION_CLOSE 0x00000102
+ */
 class ConnectionCloseError : public RSocketError {
  public:
   using RSocketError::RSocketError;
 
-  int getErrorCode() override {
+  int getErrorCode() const override {
     return 0x00000102;
   }
 
@@ -117,4 +130,4 @@ class ConnectionCloseError : public RSocketError {
     return "CONNECTION_CLOSE";
   }
 };
-}
+} // namespace rsocket

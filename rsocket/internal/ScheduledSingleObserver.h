@@ -1,4 +1,16 @@
-// Copyright 2004-present Facebook. All Rights Reserved.
+// Copyright (c) Facebook, Inc. and its affiliates.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #pragma once
 
@@ -17,24 +29,23 @@ namespace rsocket {
 // application code so that calls to on{Subscribe,Success,Error} are
 // scheduled on the right EventBase.
 //
-template<typename T>
+template <typename T>
 class ScheduledSingleObserver : public yarpl::single::SingleObserver<T> {
  public:
   ScheduledSingleObserver(
-      yarpl::Reference<yarpl::single::SingleObserver<T>> observer,
-      folly::EventBase& eventBase) :
-      inner_(std::move(observer)), eventBase_(eventBase) {}
+      std::shared_ptr<yarpl::single::SingleObserver<T>> observer,
+      folly::EventBase& eventBase)
+      : inner_(std::move(observer)), eventBase_(eventBase) {}
 
-  void onSubscribe(
-      yarpl::Reference<yarpl::single::SingleSubscription> subscription) override {
+  void onSubscribe(std::shared_ptr<yarpl::single::SingleSubscription>
+                       subscription) override {
     if (eventBase_.isInEventBaseThread()) {
       inner_->onSubscribe(std::move(subscription));
     } else {
       eventBase_.runInEventBaseThread(
-      [inner = inner_, subscription = std::move(subscription)]
-      {
-        inner->onSubscribe(std::move(subscription));
-      });
+          [inner = inner_, subscription = std::move(subscription)] {
+            inner->onSubscribe(std::move(subscription));
+          });
     }
   }
 
@@ -44,9 +55,9 @@ class ScheduledSingleObserver : public yarpl::single::SingleObserver<T> {
       inner_->onSuccess(std::move(value));
     } else {
       eventBase_.runInEventBaseThread(
-      [inner = inner_, value = std::move(value)]() mutable {
-        inner->onSuccess(std::move(value));
-      });
+          [inner = inner_, value = std::move(value)]() mutable {
+            inner->onSuccess(std::move(value));
+          });
     }
   }
 
@@ -56,14 +67,14 @@ class ScheduledSingleObserver : public yarpl::single::SingleObserver<T> {
       inner_->onError(std::move(ex));
     } else {
       eventBase_.runInEventBaseThread(
-      [inner = inner_, ex = std::move(ex)]() mutable {
-        inner->onError(std::move(ex));
-      });
+          [inner = inner_, ex = std::move(ex)]() mutable {
+            inner->onError(std::move(ex));
+          });
     }
   }
 
  private:
-  yarpl::Reference<yarpl::single::SingleObserver<T>> inner_;
+  const std::shared_ptr<yarpl::single::SingleObserver<T>> inner_;
   folly::EventBase& eventBase_;
 };
 
@@ -73,18 +84,19 @@ class ScheduledSingleObserver : public yarpl::single::SingleObserver<T> {
 // application code will be wrapped with a scheduled subscription to make the
 // call to Subscription::cancel safe.
 //
-template<typename T>
-class ScheduledSubscriptionSingleObserver : public yarpl::single::SingleObserver<T> {
+template <typename T>
+class ScheduledSubscriptionSingleObserver
+    : public yarpl::single::SingleObserver<T> {
  public:
   ScheduledSubscriptionSingleObserver(
-      yarpl::Reference<yarpl::single::SingleObserver<T>> observer,
-      folly::EventBase& eventBase) :
-      inner_(std::move(observer)), eventBase_(eventBase) {}
+      std::shared_ptr<yarpl::single::SingleObserver<T>> observer,
+      folly::EventBase& eventBase)
+      : inner_(std::move(observer)), eventBase_(eventBase) {}
 
-  void onSubscribe(
-      yarpl::Reference<yarpl::single::SingleSubscription> subscription) override {
-    inner_->onSubscribe(
-        yarpl::make_ref<ScheduledSingleSubscription>(std::move(subscription), eventBase_));
+  void onSubscribe(std::shared_ptr<yarpl::single::SingleSubscription>
+                       subscription) override {
+    inner_->onSubscribe(std::make_shared<ScheduledSingleSubscription>(
+        std::move(subscription), eventBase_));
   }
 
   // No further calls to the subscription after this method is invoked.
@@ -98,7 +110,7 @@ class ScheduledSubscriptionSingleObserver : public yarpl::single::SingleObserver
   }
 
  private:
-  yarpl::Reference<yarpl::single::SingleObserver<T>> inner_;
+  const std::shared_ptr<yarpl::single::SingleObserver<T>> inner_;
   folly::EventBase& eventBase_;
 };
-} // rsocket
+} // namespace rsocket

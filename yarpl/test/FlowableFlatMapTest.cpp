@@ -1,19 +1,28 @@
-// Copyright 2004-present Facebook. All Rights Reserved.
+// Copyright (c) Facebook, Inc. and its affiliates.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
+#include <folly/io/async/EventBase.h>
+#include <folly/io/async/EventBaseThread.h>
+#include <folly/synchronization/Baton.h>
 #include <gtest/gtest.h>
 #include <deque>
 #include <thread>
 #include <type_traits>
 #include <vector>
-
-#include <folly/io/async/EventBase.h>
-#include <folly/io/async/EventBaseThread.h>
-#include <folly/synchronization/Baton.h>
-
-#include "yarpl/test_utils/Mocks.h"
-
 #include "yarpl/Flowable.h"
 #include "yarpl/flowable/TestSubscriber.h"
+#include "yarpl/test_utils/Mocks.h"
 
 namespace yarpl {
 namespace flowable {
@@ -25,9 +34,9 @@ namespace {
 /// exception was sent, the exception is thrown.
 template <typename T>
 std::vector<T> run(
-    Reference<Flowable<T>> flowable,
+    std::shared_ptr<Flowable<T>> flowable,
     int64_t requestCount = 100) {
-  auto subscriber = make_ref<TestSubscriber<T>>(requestCount);
+  auto subscriber = std::make_shared<TestSubscriber<T>>(requestCount);
   flowable->subscribe(subscriber);
   return std::move(subscriber->values());
 }
@@ -49,16 +58,16 @@ filter_range(std::vector<int64_t> in, int64_t startat, int64_t endat) {
 }
 
 auto make_flowable_mapper_func() {
-  return folly::Function<Reference<Flowable<int64_t>>(int)>([](int n) {
+  return folly::Function<std::shared_ptr<Flowable<int64_t>>(int)>([](int n) {
     switch (n) {
       case 10:
-        return Flowables::range(n, 2);
+        return Flowable<>::range(n, 2);
       case 20:
-        return Flowables::range(n, 3);
+        return Flowable<>::range(n, 3);
       case 30:
-        return Flowables::range(n, 4);
+        return Flowable<>::range(n, 4);
     }
-    return Flowables::range(n, 3);
+    return Flowable<>::range(n, 3);
   });
 }
 
@@ -91,8 +100,8 @@ bool validate_flatmapped_values(
 }
 
 TEST(FlowableFlatMapTest, AllRequestedTest) {
-  auto f =
-      Flowables::justN<int>({10, 20, 30})->flatMap(make_flowable_mapper_func());
+  auto f = Flowable<>::justN<int>({10, 20, 30})
+               ->flatMap(make_flowable_mapper_func());
 
   std::vector<int64_t> res = run(f);
   EXPECT_EQ(9UL, res.size());
@@ -102,10 +111,10 @@ TEST(FlowableFlatMapTest, AllRequestedTest) {
 }
 
 TEST(FlowableFlatMapTest, FiniteRequested) {
-  auto f =
-      Flowables::justN<int>({10, 20, 30})->flatMap(make_flowable_mapper_func());
+  auto f = Flowable<>::justN<int>({10, 20, 30})
+               ->flatMap(make_flowable_mapper_func());
 
-  auto subscriber = make_ref<TestSubscriber<int64_t>>(1);
+  auto subscriber = std::make_shared<TestSubscriber<int64_t>>(1);
   f->subscribe(subscriber);
 
   EXPECT_EQ(1UL, subscriber->values().size());
@@ -121,15 +130,15 @@ TEST(FlowableFlatMapTest, FiniteRequested) {
 }
 
 TEST(FlowableFlatMapTest, MappingLambdaThrowsErrorOnFirstCall) {
-  folly::Function<Reference<Flowable<int64_t>>(int)> func = [](int n) {
+  folly::Function<std::shared_ptr<Flowable<int64_t>>(int)> func = [](int n) {
     CHECK_EQ(1, n);
     throw std::runtime_error{"throwing in mapper!"};
-    return Flowables::empty<int64_t>();
+    return Flowable<int64_t>::empty();
   };
 
-  auto f = Flowables::just<int>(1)->flatMap(std::move(func));
+  auto f = Flowable<>::just<int>(1)->flatMap(std::move(func));
 
-  auto subscriber = make_ref<TestSubscriber<int64_t>>(1);
+  auto subscriber = std::make_shared<TestSubscriber<int64_t>>(1);
   f->subscribe(subscriber);
 
   EXPECT_EQ(subscriber->getValueCount(), 0);
@@ -138,26 +147,26 @@ TEST(FlowableFlatMapTest, MappingLambdaThrowsErrorOnFirstCall) {
 }
 
 TEST(FlowableFlatMapTest, MappedStreamThrows) {
-  folly::Function<Reference<Flowable<int64_t>>(int)> func = [](int n) {
+  folly::Function<std::shared_ptr<Flowable<int64_t>>(int)> func = [](int n) {
     CHECK_EQ(1, n);
 
     // flowable which emits an onNext, then the next iteration, emits an error
     int64_t i = 1;
-    return Flowable<int64_t>::create([i](auto subscriber, int64_t req) mutable {
-      CHECK_EQ(1, req);
-      if (i > 0) {
-        subscriber->onNext(i);
-        i--;
-      } else {
-        subscriber->onError(std::runtime_error{"throwing in stream!"});
-      }
-      return std::tuple<int64_t, bool>(1, false);
-    });
+    return Flowable<int64_t>::create(
+        [i](auto& subscriber, int64_t req) mutable {
+          CHECK_EQ(1, req);
+          if (i > 0) {
+            subscriber.onNext(i);
+            i--;
+          } else {
+            subscriber.onError(std::runtime_error{"throwing in stream!"});
+          }
+        });
   };
 
-  auto f = Flowables::just<int>(1)->flatMap(std::move(func));
+  auto f = Flowable<>::just<int>(1)->flatMap(std::move(func));
 
-  auto subscriber = make_ref<TestSubscriber<int64_t>>(2);
+  auto subscriber = std::make_shared<TestSubscriber<int64_t>>(2);
   f->subscribe(subscriber);
 
   EXPECT_EQ(subscriber->values(), std::vector<int64_t>({1}));
@@ -183,34 +192,16 @@ struct CBSubscription : yarpl::flowable::Subscription {
 
 struct FlowableEvbPair {
   FlowableEvbPair() = default;
-  Reference<Flowable<int>> flowable{nullptr};
+  std::shared_ptr<Flowable<int>> flowable{nullptr};
   folly::EventBaseThread evb{};
 };
 
 std::shared_ptr<FlowableEvbPair> make_range_flowable(int start, int end) {
   auto ret = std::make_shared<FlowableEvbPair>();
   ret->evb.start("MRF_Worker");
-
-  ret->flowable = Flowables::fromPublisher<int>(
-      [&ret, start, end](Reference<Subscriber<int>> s) mutable {
-        auto evb = ret->evb.getEventBase();
-        auto subscription = yarpl::make_ref<CBSubscription>(
-            [=](int64_t req) mutable {
-              /* request */
-              CHECK_EQ(req, 1);
-              if (start >= end) {
-                evb->runInEventBaseThread([=] { s->onComplete(); });
-              } else {
-                auto n = start++;
-                evb->runInEventBaseThread([=] { s->onNext(n); });
-              }
-            },
-            /* onCancel: do nothing */
-            []() {});
-
-        evb->runInEventBaseThread([=] { s->onSubscribe(subscription); });
-      });
-
+  ret->flowable = Flowable<>::range(start, end - start)
+                      ->map([](int64_t val) { return (int)val; })
+                      ->subscribeOn(*ret->evb.getEventBase());
   return ret;
 }
 
@@ -218,7 +209,7 @@ TEST(FlowableFlatMapTest, Multithreaded) {
   auto p1 = make_range_flowable(10, 12);
   auto p2 = make_range_flowable(20, 25);
 
-  auto f = Flowables::range(0, 2)->flatMap([&](auto i) {
+  auto f = Flowable<>::range(0, 2)->flatMap([&](auto i) {
     if (i == 0) {
       return p1->flowable;
     } else {
@@ -226,7 +217,7 @@ TEST(FlowableFlatMapTest, Multithreaded) {
     }
   });
 
-  auto sub = yarpl::make_ref<TestSubscriber<int>>(0);
+  auto sub = std::make_shared<TestSubscriber<int>>(0);
   f->subscribe(sub);
 
   sub->request(2);
@@ -242,7 +233,7 @@ TEST(FlowableFlatMapTest, MultithreadedLargeAmount) {
   auto p1 = make_range_flowable(10000, 40000);
   auto p2 = make_range_flowable(50000, 80000);
 
-  auto f = Flowables::range(0, 2)->flatMap([&](auto i) {
+  auto f = Flowable<>::range(0, 2)->flatMap([&](auto i) {
     if (i == 0) {
       return p1->flowable;
     } else {
@@ -250,7 +241,7 @@ TEST(FlowableFlatMapTest, MultithreadedLargeAmount) {
     }
   });
 
-  auto sub = yarpl::make_ref<TestSubscriber<int>>();
+  auto sub = std::make_shared<TestSubscriber<int>>();
   sub->dropValues(true);
 
   f->subscribe(sub);
@@ -264,14 +255,14 @@ TEST(FlowableFlatMapTest, MultithreadedLargeAmount) {
 }
 
 TEST(FlowableFlatMapTest, MergeOperator) {
-  auto sub = yarpl::make_ref<TestSubscriber<std::string>>(0);
+  auto sub = std::make_shared<TestSubscriber<std::string>>(0);
 
-  auto p1 = Flowables::justN<std::string>({"foo", "bar"});
-  auto p2 = Flowables::justN<std::string>({"baz", "quxx"});
-  Reference<Flowable<Reference<Flowable<std::string>>>> p3 =
-      Flowables::justN<Reference<Flowable<std::string>>>({p1, p2});
+  auto p1 = Flowable<>::justN<std::string>({"foo", "bar"});
+  auto p2 = Flowable<>::justN<std::string>({"baz", "quxx"});
+  std::shared_ptr<Flowable<std::shared_ptr<Flowable<std::string>>>> p3 =
+      Flowable<>::justN<std::shared_ptr<Flowable<std::string>>>({p1, p2});
 
-  Reference<Flowable<std::string>> p4 = p3->merge();
+  std::shared_ptr<Flowable<std::string>> p4 = p3->merge();
   p4->subscribe(sub);
 
   EXPECT_EQ(0, sub->getValueCount());

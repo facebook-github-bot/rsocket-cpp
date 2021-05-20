@@ -1,4 +1,16 @@
-// Copyright 2004-present Facebook. All Rights Reserved.
+// Copyright (c) Facebook, Inc. and its affiliates.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #include "rsocket/internal/SetupResumeAcceptor.h"
 
@@ -8,73 +20,74 @@
 #include "rsocket/framing/Frame.h"
 #include "rsocket/framing/FrameProcessor.h"
 #include "rsocket/framing/FrameSerializer.h"
-#include "rsocket/framing/FrameTransportImpl.h"
 
 namespace rsocket {
 
-namespace {
+/// Subscriber that owns a connection, sets itself as that connection's input,
+/// and reads out a single frame before cancelling.
+class SetupResumeAcceptor::OneFrameSubscriber final
+    : public yarpl::flowable::BaseSubscriber<std::unique_ptr<folly::IOBuf>> {
+ public:
+  OneFrameSubscriber(
+      SetupResumeAcceptor& acceptor,
+      std::unique_ptr<DuplexConnection> connection,
+      SetupResumeAcceptor::OnSetup onSetup,
+      SetupResumeAcceptor::OnResume onResume)
+      : acceptor_{acceptor},
+        connection_{std::move(connection)},
+        onSetup_{std::move(onSetup)},
+        onResume_{std::move(onResume)} {
+    DCHECK(connection_);
+    DCHECK(onSetup_);
+    DCHECK(onResume_);
+    DCHECK(acceptor_.inOwnerThread());
+  }
 
-/// FrameProcessor that does nothing.  Necessary to tell a FrameTransport it can
-/// output frames in the cases where we want to error it.
-class NoneFrameProcessor final : public FrameProcessor {
-  void processFrame(std::unique_ptr<folly::IOBuf>) override {}
-  void onTerminal(folly::exception_wrapper) override {}
+  void setInput() {
+    DCHECK(acceptor_.inOwnerThread());
+    connection_->setInput(ref_from_this(this));
+  }
+
+  /// Shut down the DuplexConnection, breaking the cycle between it and this
+  /// subscriber.  Expects the DuplexConnection's destructor to call
+  /// onComplete/onError on its input subscriber (this).
+  void close() {
+    auto self = ref_from_this(this);
+    connection_.reset();
+  }
+
+  void onSubscribeImpl() override {
+    DCHECK(acceptor_.inOwnerThread());
+    this->request(1);
+  }
+
+  void onNextImpl(std::unique_ptr<folly::IOBuf> buf) override {
+    DCHECK(connection_) << "OneFrameSubscriber received more than one frame";
+    DCHECK(acceptor_.inOwnerThread());
+
+    this->cancel(); // calls onTerminateImpl
+
+    acceptor_.processFrame(
+        std::move(connection_),
+        std::move(buf),
+        std::move(onSetup_),
+        std::move(onResume_));
+  }
+
+  void onCompleteImpl() override {}
+  void onErrorImpl(folly::exception_wrapper) override {}
+
+  void onTerminateImpl() override {
+    DCHECK(acceptor_.inOwnerThread());
+    acceptor_.remove(ref_from_this(this));
+  }
+
+ private:
+  SetupResumeAcceptor& acceptor_;
+  std::unique_ptr<DuplexConnection> connection_;
+  SetupResumeAcceptor::OnSetup onSetup_;
+  SetupResumeAcceptor::OnResume onResume_;
 };
-
-} // namespace
-
-SetupResumeAcceptor::OneFrameSubscriber::OneFrameSubscriber(
-    SetupResumeAcceptor& acceptor,
-    std::unique_ptr<DuplexConnection> connection,
-    SetupResumeAcceptor::OnSetup onSetup,
-    SetupResumeAcceptor::OnResume onResume)
-    : acceptor_{acceptor},
-      connection_{std::move(connection)},
-      onSetup_{std::move(onSetup)},
-      onResume_{std::move(onResume)} {
-  DCHECK(connection_);
-  DCHECK(onSetup_);
-  DCHECK(onResume_);
-  DCHECK(acceptor_.inOwnerThread());
-}
-
-void SetupResumeAcceptor::OneFrameSubscriber::setInput() {
-  DCHECK(acceptor_.inOwnerThread());
-  connection_->setInput(ref_from_this(this));
-}
-
-void SetupResumeAcceptor::OneFrameSubscriber::close() {
-  auto self = ref_from_this(this);
-  connection_.reset();
-}
-
-void SetupResumeAcceptor::OneFrameSubscriber::onSubscribeImpl() {
-  DCHECK(acceptor_.inOwnerThread());
-  this->request(std::numeric_limits<int32_t>::max());
-}
-
-void SetupResumeAcceptor::OneFrameSubscriber::onNextImpl(
-    std::unique_ptr<folly::IOBuf> buf) {
-  DCHECK(connection_) << "OneFrameSubscriber received more than one frame";
-  DCHECK(acceptor_.inOwnerThread());
-
-  this->cancel(); // calls onTerminateImpl
-
-  acceptor_.processFrame(
-      std::move(connection_),
-      std::move(buf),
-      std::move(onSetup_),
-      std::move(onResume_));
-}
-
-void SetupResumeAcceptor::OneFrameSubscriber::onCompleteImpl() {}
-void SetupResumeAcceptor::OneFrameSubscriber::onErrorImpl(
-    folly::exception_wrapper) {}
-
-void SetupResumeAcceptor::OneFrameSubscriber::onTerminateImpl() {
-  DCHECK(acceptor_.inOwnerThread());
-  acceptor_.remove(ref_from_this(this));
-}
 
 SetupResumeAcceptor::SetupResumeAcceptor(folly::EventBase* eventBase)
     : eventBase_{eventBase} {
@@ -97,7 +110,7 @@ void SetupResumeAcceptor::processFrame(
     return;
   }
 
-  auto serializer = FrameSerializer::createAutodetectedSerializer(*buf);
+  const auto serializer = FrameSerializer::createAutodetectedSerializer(*buf);
   if (!serializer) {
     VLOG(2) << "Unable to detect protocol version";
     return;
@@ -107,7 +120,7 @@ void SetupResumeAcceptor::processFrame(
     case FrameType::SETUP: {
       Frame_SETUP frame;
       if (!serializer->deserializeFrom(frame, std::move(buf))) {
-        std::string msg{"Cannot decode SETUP frame"};
+        constexpr auto msg = "Cannot decode SETUP frame";
         auto err = serializer->serializeOut(Frame_ERROR::connectionError(msg));
         connection->send(std::move(err));
         break;
@@ -119,30 +132,20 @@ void SetupResumeAcceptor::processFrame(
       frame.moveToSetupPayload(params);
 
       if (serializer->protocolVersion() != params.protocolVersion) {
-        std::string msg{"SETUP frame has invalid protocol version"};
+        constexpr auto msg = "SETUP frame has invalid protocol version";
         auto err = serializer->serializeOut(Frame_ERROR::invalidSetup(msg));
         connection->send(std::move(err));
         break;
       }
 
-      auto transport =
-          yarpl::make_ref<FrameTransportImpl>(std::move(connection));
-
-      try {
-        onSetup(transport, std::move(params));
-      } catch (const std::exception& exn) {
-        auto err = Frame_ERROR::rejectedSetup(exn.what());
-        transport->setFrameProcessor(std::make_shared<NoneFrameProcessor>());
-        transport->outputFrameOrDrop(serializer->serializeOut(std::move(err)));
-        transport->close();
-      }
+      onSetup(std::move(connection), std::move(params));
       break;
     }
 
     case FrameType::RESUME: {
       Frame_RESUME frame;
       if (!serializer->deserializeFrom(frame, std::move(buf))) {
-        std::string msg{"Cannot decode RESUME frame"};
+        constexpr auto msg = "Cannot decode RESUME frame";
         auto err = serializer->serializeOut(Frame_ERROR::connectionError(msg));
         connection->send(std::move(err));
         break;
@@ -157,28 +160,18 @@ void SetupResumeAcceptor::processFrame(
           ProtocolVersion(frame.versionMajor_, frame.versionMinor_));
 
       if (serializer->protocolVersion() != params.protocolVersion) {
-        std::string msg{"RESUME frame has invalid protocol version"};
+        constexpr auto msg = "RESUME frame has invalid protocol version";
         auto err = serializer->serializeOut(Frame_ERROR::rejectedResume(msg));
         connection->send(std::move(err));
         break;
       }
 
-      auto transport =
-          yarpl::make_ref<FrameTransportImpl>(std::move(connection));
-
-      try {
-        onResume(transport, std::move(params));
-      } catch (const std::exception& exn) {
-        auto err = Frame_ERROR::rejectedResume(exn.what());
-        transport->setFrameProcessor(std::make_shared<NoneFrameProcessor>());
-        transport->outputFrameOrDrop(serializer->serializeOut(std::move(err)));
-        transport->close();
-      }
+      onResume(std::move(connection), std::move(params));
       break;
     }
 
     default: {
-      std::string msg{"Invalid frame, expected SETUP/RESUME"};
+      constexpr auto msg = "Invalid frame, expected SETUP/RESUME";
       auto err = serializer->serializeOut(Frame_ERROR::connectionError(msg));
       connection->send(std::move(err));
       break;
@@ -196,14 +189,14 @@ void SetupResumeAcceptor::accept(
     return;
   }
 
-  auto subscriber = yarpl::make_ref<OneFrameSubscriber>(
+  const auto subscriber = std::make_shared<OneFrameSubscriber>(
       *this, std::move(connection), std::move(onSetup), std::move(onResume));
   connections_.insert(subscriber);
   subscriber->setInput();
 }
 
 void SetupResumeAcceptor::remove(
-    const yarpl::Reference<SetupResumeAcceptor::OneFrameSubscriber>&
+    const std::shared_ptr<SetupResumeAcceptor::OneFrameSubscriber>&
         subscriber) {
   DCHECK(inOwnerThread());
   connections_.erase(subscriber);

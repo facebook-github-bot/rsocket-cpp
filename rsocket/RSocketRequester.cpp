@@ -1,4 +1,16 @@
-// Copyright 2004-present Facebook. All Rights Reserved.
+// Copyright (c) Facebook, Inc. and its affiliates.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #include "rsocket/RSocketRequester.h"
 
@@ -10,161 +22,160 @@
 #include "yarpl/single/SingleSubscriptions.h"
 
 using namespace folly;
-using namespace yarpl;
 
 namespace rsocket {
+
+namespace {
+
+template <class Fn>
+void runOnCorrectThread(folly::EventBase& evb, Fn fn) {
+  if (evb.isInEventBaseThread()) {
+    fn();
+  } else {
+    evb.runInEventBaseThread(std::move(fn));
+  }
+}
+
+} // namespace
 
 RSocketRequester::RSocketRequester(
     std::shared_ptr<RSocketStateMachine> srs,
     EventBase& eventBase)
-    : stateMachine_(std::move(srs)), eventBase_(&eventBase) {}
+    : stateMachine_{std::move(srs)}, eventBase_{&eventBase} {}
 
 RSocketRequester::~RSocketRequester() {
   VLOG(1) << "Destroying RSocketRequester";
 }
 
 void RSocketRequester::closeSocket() {
-  eventBase_->add([stateMachine = std::move(stateMachine_)] {
+  eventBase_->runInEventBaseThread([stateMachine = std::move(stateMachine_)] {
     VLOG(2) << "Closing RSocketStateMachine on EventBase";
-    stateMachine->close(
-        folly::exception_wrapper(), StreamCompletionSignal::SOCKET_CLOSED);
+    stateMachine->close({}, StreamCompletionSignal::SOCKET_CLOSED);
   });
 }
 
-yarpl::Reference<yarpl::flowable::Flowable<rsocket::Payload>>
+std::shared_ptr<yarpl::flowable::Flowable<rsocket::Payload>>
 RSocketRequester::requestChannel(
-    yarpl::Reference<yarpl::flowable::Flowable<rsocket::Payload>>
+    std::shared_ptr<yarpl::flowable::Flowable<rsocket::Payload>>
         requestStream) {
-  CHECK(stateMachine_); // verify the socket was not closed
-
-  return yarpl::flowable::Flowables::fromPublisher<Payload>([
-    eb = eventBase_,
-    requestStream = std::move(requestStream),
-    srs = stateMachine_
-  ](yarpl::Reference<yarpl::flowable::Subscriber<Payload>> subscriber) mutable {
-    auto lambda = [
-      requestStream = std::move(requestStream),
-      subscriber = std::move(subscriber),
-      srs = std::move(srs),
-      eb
-    ]() mutable {
-      auto responseSink = srs->streamsFactory().createChannelRequester(
-          yarpl::make_ref<ScheduledSubscriptionSubscriber<Payload>>(
-              std::move(subscriber), *eb));
-      // responseSink is wrapped with thread scheduling
-      // so all emissions happen on the right thread
-
-      // if we don't get a responseSink back, that means that
-      // the requesting peer wasn't connected (or similar error)
-      // and the Flowable it gets back will immediately call onError
-      if (responseSink) {
-        requestStream->subscribe(yarpl::make_ref<ScheduledSubscriber<Payload>>(
-            std::move(responseSink), *eb));
-      }
-    };
-    if (eb->isInEventBaseThread()) {
-      lambda();
-    } else {
-      eb->runInEventBaseThread(std::move(lambda));
-    }
-  });
+  return requestChannel({}, false, std::move(requestStream));
 }
 
-yarpl::Reference<yarpl::flowable::Flowable<Payload>>
-RSocketRequester::requestStream(Payload request) {
-  CHECK(stateMachine_); // verify the socket was not closed
-
-  return yarpl::flowable::Flowables::fromPublisher<Payload>([
-    eb = eventBase_,
-    request = std::move(request),
-    srs = stateMachine_
-  ](yarpl::Reference<yarpl::flowable::Subscriber<Payload>> subscriber) mutable {
-    auto lambda = [
-      request = std::move(request),
-      subscriber = std::move(subscriber),
-      srs = std::move(srs),
-      eb
-    ]() mutable {
-      srs->streamsFactory().createStreamRequester(
-          std::move(request),
-          yarpl::make_ref<ScheduledSubscriptionSubscriber<Payload>>(
-              std::move(subscriber), *eb));
-    };
-    if (eb->isInEventBaseThread()) {
-      lambda();
-    } else {
-      eb->runInEventBaseThread(std::move(lambda));
-    }
-  });
+std::shared_ptr<yarpl::flowable::Flowable<rsocket::Payload>>
+RSocketRequester::requestChannel(
+    Payload request,
+    std::shared_ptr<yarpl::flowable::Flowable<rsocket::Payload>>
+        requestStream) {
+  return requestChannel(std::move(request), true, std::move(requestStream));
 }
 
-yarpl::Reference<yarpl::single::Single<rsocket::Payload>>
-RSocketRequester::requestResponse(Payload request) {
-  CHECK(stateMachine_); // verify the socket was not closed
+std::shared_ptr<yarpl::flowable::Flowable<rsocket::Payload>>
+RSocketRequester::requestChannel(
+    Payload request,
+    bool hasInitialRequest,
+    std::shared_ptr<yarpl::flowable::Flowable<rsocket::Payload>>
+        requestStreamFlowable) {
+  CHECK(stateMachine_);
 
-  return yarpl::single::Single<Payload>::create([
-    eb = eventBase_,
-    request = std::move(request),
-    srs = stateMachine_
-  ](yarpl::Reference<yarpl::single::SingleObserver<Payload>> observer) mutable {
-    auto lambda = [
-      request = std::move(request),
-      observer = std::move(observer),
-      eb,
-      srs = std::move(srs)
-    ]() mutable {
-      srs->streamsFactory().createRequestResponseRequester(
-          std::move(request),
-          yarpl::make_ref<ScheduledSubscriptionSingleObserver<Payload>>(
-              std::move(observer), *eb));
-    };
-    if (eb->isInEventBaseThread()) {
-      lambda();
-    } else {
-      eb->runInEventBaseThread(std::move(lambda));
-    }
-  });
-}
+  return yarpl::flowable::internal::flowableFromSubscriber<Payload>(
+      [eb = eventBase_,
+       req = std::move(request),
+       hasInitialRequest,
+       requestStream = std::move(requestStreamFlowable),
+       srs = stateMachine_](
+          std::shared_ptr<yarpl::flowable::Subscriber<Payload>> subscriber) {
+        auto lambda = [eb,
+                       r = req.clone(),
+                       hasInitialRequest,
+                       requestStream,
+                       srs,
+                       subs = std::move(subscriber)]() mutable {
+          auto scheduled =
+              std::make_shared<ScheduledSubscriptionSubscriber<Payload>>(
+                  std::move(subs), *eb);
+          auto responseSink = srs->requestChannel(
+              std::move(r), hasInitialRequest, std::move(scheduled));
+          // responseSink is wrapped with thread scheduling
+          // so all emissions happen on the right thread.
 
-yarpl::Reference<yarpl::single::Single<void>> RSocketRequester::fireAndForget(
-    rsocket::Payload request) {
-  CHECK(stateMachine_); // verify the socket was not closed
-
-  return yarpl::single::Single<void>::create([
-    eb = eventBase_,
-    request = std::move(request),
-    srs = stateMachine_
-  ](yarpl::Reference<yarpl::single::SingleObserverBase<void>> subscriber) mutable {
-    auto lambda = [
-      request = std::move(request),
-      subscriber = std::move(subscriber),
-      srs = std::move(srs)
-    ]() mutable {
-      // TODO pass in SingleSubscriber for underlying layers to
-      // call onSuccess/onError once put on network
-      srs->fireAndForget(std::move(request));
-      // right now just immediately call onSuccess
-      subscriber->onSubscribe(yarpl::single::SingleSubscriptions::empty());
-      subscriber->onSuccess();
-    };
-    if (eb->isInEventBaseThread()) {
-      lambda();
-    } else {
-      eb->runInEventBaseThread(std::move(lambda));
-    }
-  });
-}
-
-void RSocketRequester::metadataPush(std::unique_ptr<folly::IOBuf> metadata) {
-  CHECK(stateMachine_); // verify the socket was not closed
-
-  eventBase_->runInEventBaseThread(
-      [ srs = stateMachine_, metadata = std::move(metadata) ]() mutable {
-        srs->metadataPush(std::move(metadata));
+          // If we don't get a responseSink back, that means that
+          // the requesting peer wasn't connected (or similar error)
+          // and the Flowable it gets back will immediately call onError.
+          if (responseSink) {
+            auto scheduledResponse =
+                std::make_shared<ScheduledSubscriber<Payload>>(
+                    std::move(responseSink), *eb);
+            requestStream->subscribe(std::move(scheduledResponse));
+          }
+        };
+        runOnCorrectThread(*eb, std::move(lambda));
       });
 }
 
-DuplexConnection* RSocketRequester::getConnection() {
-  return stateMachine_? stateMachine_->getConnection() : nullptr;
+std::shared_ptr<yarpl::flowable::Flowable<Payload>>
+RSocketRequester::requestStream(Payload request) {
+  CHECK(stateMachine_);
+
+  return yarpl::flowable::internal::flowableFromSubscriber<Payload>(
+      [eb = eventBase_, req = std::move(request), srs = stateMachine_](
+          std::shared_ptr<yarpl::flowable::Subscriber<Payload>> subscriber) {
+        auto lambda =
+            [eb, r = req.clone(), srs, subs = std::move(subscriber)]() mutable {
+              auto scheduled =
+                  std::make_shared<ScheduledSubscriptionSubscriber<Payload>>(
+                      std::move(subs), *eb);
+              srs->requestStream(std::move(r), std::move(scheduled));
+            };
+        runOnCorrectThread(*eb, std::move(lambda));
+      });
 }
+
+std::shared_ptr<yarpl::single::Single<rsocket::Payload>>
+RSocketRequester::requestResponse(Payload request) {
+  CHECK(stateMachine_);
+
+  return yarpl::single::Single<Payload>::create(
+      [eb = eventBase_, req = std::move(request), srs = stateMachine_](
+          std::shared_ptr<yarpl::single::SingleObserver<Payload>> observer) {
+        auto lambda = [eb,
+                       r = req.clone(),
+                       srs,
+                       obs = std::move(observer)]() mutable {
+          auto scheduled =
+              std::make_shared<ScheduledSubscriptionSingleObserver<Payload>>(
+                  std::move(obs), *eb);
+          srs->requestResponse(std::move(r), std::move(scheduled));
+        };
+        runOnCorrectThread(*eb, std::move(lambda));
+      });
+}
+
+std::shared_ptr<yarpl::single::Single<void>> RSocketRequester::fireAndForget(
+    rsocket::Payload request) {
+  CHECK(stateMachine_);
+
+  return yarpl::single::Single<void>::create(
+      [eb = eventBase_, req = std::move(request), srs = stateMachine_](
+          std::shared_ptr<yarpl::single::SingleObserverBase<void>> subscriber) {
+        auto lambda =
+            [r = req.clone(), srs, subs = std::move(subscriber)]() mutable {
+              // TODO: Pass in SingleSubscriber for underlying layers to call
+              // onSuccess/onError once put on network.
+              srs->fireAndForget(std::move(r));
+              subs->onSubscribe(yarpl::single::SingleSubscriptions::empty());
+              subs->onSuccess();
+            };
+        runOnCorrectThread(*eb, std::move(lambda));
+      });
+}
+
+void RSocketRequester::metadataPush(std::unique_ptr<folly::IOBuf> metadata) {
+  CHECK(stateMachine_);
+
+  runOnCorrectThread(
+      *eventBase_, [srs = stateMachine_, meta = std::move(metadata)]() mutable {
+        srs->metadataPush(std::move(meta));
+      });
+}
+
 } // namespace rsocket

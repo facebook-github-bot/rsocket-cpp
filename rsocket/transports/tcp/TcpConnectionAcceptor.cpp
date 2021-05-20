@@ -1,4 +1,16 @@
-// Copyright 2004-present Facebook. All Rights Reserved.
+// Copyright (c) Facebook, Inc. and its affiliates.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #include "rsocket/transports/tcp/TcpConnectionAcceptor.h"
 
@@ -6,10 +18,7 @@
 #include <folly/futures/Future.h>
 #include <folly/io/async/AsyncSocket.h>
 #include <folly/io/async/EventBaseManager.h>
-#include <folly/io/async/ScopedEventBaseThread.h>
-#include <folly/system/ThreadName.h>
 
-#include "rsocket/framing/FramedDuplexConnection.h"
 #include "rsocket/transports/tcp/TcpDuplexConnection.h"
 
 namespace rsocket {
@@ -18,15 +27,17 @@ class TcpConnectionAcceptor::SocketCallback
     : public folly::AsyncServerSocket::AcceptCallback {
  public:
   explicit SocketCallback(OnDuplexConnectionAccept& onAccept)
-      : onAccept_{onAccept} {}
+      : thread_{folly::sformat("rstcp-acceptor")}, onAccept_{onAccept} {}
 
   void connectionAccepted(
-      int fd,
+      folly::NetworkSocket fdNetworkSocket,
       const folly::SocketAddress& address) noexcept override {
+    int fd = fdNetworkSocket.toFd();
+
     VLOG(2) << "Accepting TCP connection from " << address << " on FD " << fd;
 
     folly::AsyncTransportWrapper::UniquePtr socket(
-        new folly::AsyncSocket(eventBase(), fd));
+        new folly::AsyncSocket(eventBase(), folly::NetworkSocket::fromFd(fd)));
 
     auto connection = std::make_unique<TcpDuplexConnection>(std::move(socket));
     onAccept_(std::move(connection), *eventBase());
@@ -48,8 +59,6 @@ class TcpConnectionAcceptor::SocketCallback
   OnDuplexConnectionAccept& onAccept_;
 };
 
-////////////////////////////////////////////////////////////////////////////////
-
 TcpConnectionAcceptor::TcpConnectionAcceptor(Options options)
     : options_(std::move(options)) {}
 
@@ -60,25 +69,18 @@ TcpConnectionAcceptor::~TcpConnectionAcceptor() {
   }
 }
 
-////////////////////////////////////////////////////////////////////////////////
-
 void TcpConnectionAcceptor::start(OnDuplexConnectionAccept onAccept) {
   if (onAccept_ != nullptr) {
     throw std::runtime_error("TcpConnectionAcceptor::start() already called");
   }
 
   onAccept_ = std::move(onAccept);
-  serverThread_ = std::make_unique<folly::ScopedEventBaseThread>();
-  serverThread_->getEventBase()->runInEventBaseThread(
-      [] { folly::setThreadName("TcpConnectionAcceptor.Listener"); });
+  serverThread_ =
+      std::make_unique<folly::ScopedEventBaseThread>("rstcp-listener");
 
   callbacks_.reserve(options_.threads);
   for (size_t i = 0; i < options_.threads; ++i) {
     callbacks_.push_back(std::make_unique<SocketCallback>(onAccept_));
-    callbacks_[i]->eventBase()->runInEventBaseThread([i] {
-      folly::EventBaseManager::get()->getEventBase()->setName(
-          folly::sformat("TCPWrk.{}", i));
-    });
   }
 
   VLOG(1) << "Starting TCP listener on port " << options_.address.getPort()
@@ -102,7 +104,7 @@ void TcpConnectionAcceptor::start(OnDuplexConnectionAccept onAccept) {
         serverSocket_->listen(options_.backlog);
         serverSocket_->startAccepting();
 
-        for (auto& i : serverSocket_->getAddresses()) {
+        for (const auto& i : serverSocket_->getAddresses()) {
           VLOG(1) << "Listening on " << i.describe();
         }
       })
@@ -112,7 +114,7 @@ void TcpConnectionAcceptor::start(OnDuplexConnectionAccept onAccept) {
 void TcpConnectionAcceptor::stop() {
   VLOG(1) << "Shutting down TCP listener";
 
-  serverThread_->getEventBase()->runInEventBaseThread(
+  serverThread_->getEventBase()->runInEventBaseThreadAndWait(
       [serverSocket = std::move(serverSocket_)]() {});
 }
 

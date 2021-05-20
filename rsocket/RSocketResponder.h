@@ -1,13 +1,51 @@
-// Copyright 2004-present Facebook. All Rights Reserved.
+// Copyright (c) Facebook, Inc. and its affiliates.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #pragma once
 
 #include "rsocket/Payload.h"
-#include "rsocket/internal/Common.h"
+#include "rsocket/framing/FrameHeader.h"
 #include "yarpl/Flowable.h"
 #include "yarpl/Single.h"
 
 namespace rsocket {
+
+class RSocketResponderCore {
+ public:
+  virtual ~RSocketResponderCore() = default;
+
+  virtual void handleFireAndForget(Payload request, StreamId streamId);
+
+  virtual void handleMetadataPush(std::unique_ptr<folly::IOBuf> metadata);
+
+  virtual std::shared_ptr<yarpl::flowable::Subscriber<Payload>>
+  handleRequestChannel(
+      Payload request,
+      StreamId streamId,
+      std::shared_ptr<yarpl::flowable::Subscriber<Payload>> response) noexcept;
+
+  virtual void handleRequestStream(
+      Payload request,
+      StreamId streamId,
+      std::shared_ptr<yarpl::flowable::Subscriber<Payload>> response) noexcept;
+
+  virtual void handleRequestResponse(
+      Payload request,
+      StreamId streamId,
+      std::shared_ptr<yarpl::single::SingleObserver<Payload>>
+          response) noexcept;
+};
 
 /**
  * Responder APIs to handle requests on an RSocket connection.
@@ -37,28 +75,28 @@ class RSocketResponder {
    *
    * Returns a Single with the response.
    */
-  virtual yarpl::Reference<yarpl::single::Single<rsocket::Payload>>
-  handleRequestResponse(rsocket::Payload request, rsocket::StreamId streamId);
+  virtual std::shared_ptr<yarpl::single::Single<Payload>> handleRequestResponse(
+      Payload request,
+      StreamId streamId);
 
   /**
    * Called when a new `requestStream` occurs from an RSocketRequester.
    *
    * Returns a Flowable with the response stream.
    */
-  virtual yarpl::Reference<yarpl::flowable::Flowable<rsocket::Payload>>
-  handleRequestStream(rsocket::Payload request, rsocket::StreamId streamId);
+  virtual std::shared_ptr<yarpl::flowable::Flowable<Payload>>
+  handleRequestStream(Payload request, StreamId streamId);
 
   /**
    * Called when a new `requestChannel` occurs from an RSocketRequester.
    *
    * Returns a Flowable with the response stream.
    */
-  virtual yarpl::Reference<yarpl::flowable::Flowable<rsocket::Payload>>
+  virtual std::shared_ptr<yarpl::flowable::Flowable<Payload>>
   handleRequestChannel(
-      rsocket::Payload request,
-      yarpl::Reference<yarpl::flowable::Flowable<rsocket::Payload>>
-          requestStream,
-      rsocket::StreamId streamId);
+      Payload request,
+      std::shared_ptr<yarpl::flowable::Flowable<Payload>> requestStream,
+      StreamId streamId);
 
   /**
    * Called when a new `fireAndForget` occurs from an RSocketRequester.
@@ -75,30 +113,42 @@ class RSocketResponder {
    * No response.
    */
   virtual void handleMetadataPush(std::unique_ptr<folly::IOBuf> metadata);
+};
+
+class RSocketResponderAdapter : public RSocketResponderCore {
+ public:
+  explicit RSocketResponderAdapter(std::shared_ptr<RSocketResponder> inner)
+      : inner_(std::move(inner)) {}
+  virtual ~RSocketResponderAdapter() = default;
 
   /// Internal method for handling channel requests, not intended to be used by
   /// application code.
-  yarpl::Reference<yarpl::flowable::Subscriber<Payload>>
-  handleRequestChannelCore(
+  std::shared_ptr<yarpl::flowable::Subscriber<Payload>> handleRequestChannel(
       Payload request,
       StreamId streamId,
-      const yarpl::Reference<yarpl::flowable::Subscriber<Payload>>&
-          response) noexcept;
+      std::shared_ptr<yarpl::flowable::Subscriber<Payload>>
+          response) noexcept override;
 
   /// Internal method for handling stream requests, not intended to be used
   /// by application code.
-  void handleRequestStreamCore(
+  void handleRequestStream(
       Payload request,
       StreamId streamId,
-      const yarpl::Reference<yarpl::flowable::Subscriber<Payload>>&
-          response) noexcept;
+      std::shared_ptr<yarpl::flowable::Subscriber<Payload>>
+          response) noexcept override;
 
   /// Internal method for handling request-response requests, not intended to be
   /// used by application code.
-  void handleRequestResponseCore(
+  void handleRequestResponse(
       Payload request,
       StreamId streamId,
-      const yarpl::Reference<yarpl::single::SingleObserver<Payload>>&
-          response) noexcept;
+      std::shared_ptr<yarpl::single::SingleObserver<Payload>>
+          response) noexcept override;
+
+  void handleFireAndForget(Payload request, StreamId streamId) override;
+  void handleMetadataPush(std::unique_ptr<folly::IOBuf> buf) override;
+
+ private:
+  std::shared_ptr<RSocketResponder> inner_;
 };
-}
+} // namespace rsocket

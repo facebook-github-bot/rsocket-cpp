@@ -1,21 +1,28 @@
-// Copyright 2004-present Facebook. All Rights Reserved.
+// Copyright (c) Facebook, Inc. and its affiliates.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #include "rsocket/internal/Common.h"
+
+#include <sstream>
 
 #include <folly/Random.h>
 #include <folly/String.h>
 #include <folly/io/IOBuf.h>
+#include <algorithm>
 #include <random>
 
 namespace rsocket {
-
-namespace {
-constexpr const char* HEX_CHARS = {"0123456789abcdef"};
-}
-
-constexpr const ProtocolVersion ProtocolVersion::Unknown = ProtocolVersion(
-    std::numeric_limits<uint16_t>::max(),
-    std::numeric_limits<uint16_t>::max());
 
 static const char* getTerminatingSignalErrorMessage(int terminatingSignal) {
   switch (static_cast<StreamCompletionSignal>(terminatingSignal)) {
@@ -44,12 +51,32 @@ static const char* getTerminatingSignalErrorMessage(int terminatingSignal) {
   }
 }
 
+folly::StringPiece toString(StreamType t) {
+  switch (t) {
+    case StreamType::REQUEST_RESPONSE:
+      return "REQUEST_RESPONSE";
+    case StreamType::STREAM:
+      return "STREAM";
+    case StreamType::CHANNEL:
+      return "CHANNEL";
+    case StreamType::FNF:
+      return "FNF";
+    default:
+      DCHECK(false);
+      return "(invalid StreamType)";
+  }
+}
+
+std::ostream& operator<<(std::ostream& os, StreamType t) {
+  return os << toString(t);
+}
+
 std::ostream& operator<<(std::ostream& os, RSocketMode mode) {
   switch (mode) {
-  case RSocketMode::CLIENT:
-    return os << "CLIENT";
-  case RSocketMode::SERVER:
-    return os << "SERVER";
+    case RSocketMode::CLIENT:
+      return os << "CLIENT";
+    case RSocketMode::SERVER:
+      return os << "SERVER";
   }
   DLOG(FATAL) << "Invalid RSocketMode";
   return os << "INVALID_RSOCKET_MODE";
@@ -80,6 +107,7 @@ std::string to_string(StreamCompletionSignal signal) {
   }
   // this should be never hit because the switch is over all cases
   LOG(FATAL) << "unknown StreamCompletionSignal=" << static_cast<int>(signal);
+  return "<unknown StreamCompletionSignal>";
 }
 
 std::ostream& operator<<(std::ostream& os, StreamCompletionSignal signal) {
@@ -90,65 +118,23 @@ StreamInterruptedException::StreamInterruptedException(int _terminatingSignal)
     : std::runtime_error(getTerminatingSignalErrorMessage(_terminatingSignal)),
       terminatingSignal(_terminatingSignal) {}
 
-ResumeIdentificationToken::ResumeIdentificationToken() {}
+std::string humanify(std::unique_ptr<folly::IOBuf> const& buf) {
+  std::string ret;
+  size_t cursor = 0;
 
-ResumeIdentificationToken::ResumeIdentificationToken(const std::string& token) {
-  auto getNibble = [&token](size_t i) {
-    uint8_t nibble;
-    if (token[i] >= '0' && token[i] <= '9') {
-      nibble = token[i] - '0';
-    } else if (token[i] >= 'a' && token[i] <= 'f') {
-      nibble = token[i] - 'a' + 10;
-    } else {
-      throw std::invalid_argument("ResumeToken not in right format: " + token);
+  for (const auto& range : *buf) {
+    for (const unsigned char chr : range) {
+      if (cursor >= 20)
+        goto outer;
+      ret += chr;
+      cursor++;
     }
-    return nibble;
-  };
-  if (token.size() < 2 || token[0] != '0' || token[1] != 'x' ||
-      (token.size() % 2) != 0) {
-    throw std::invalid_argument("ResumeToken not in right format: " + token);
   }
-  size_t i = 2;
-  while (i < token.size()) {
-    uint8_t firstNibble = getNibble(i++);
-    uint8_t secondNibble = getNibble(i++);
-    bits_.push_back((firstNibble << 4) | secondNibble);
-  }
-}
+outer:
 
-ResumeIdentificationToken ResumeIdentificationToken::generateNew() {
-  constexpr size_t kSize = 16;
-  std::vector<uint8_t> data;
-  data.reserve(kSize);
-  for (size_t i = 0; i < kSize; i++) {
-    data.push_back(static_cast<uint8_t>(folly::Random::rand32()));
-  }
-  return ResumeIdentificationToken(std::move(data));
+  return folly::humanify(ret);
 }
-
-void ResumeIdentificationToken::set(std::vector<uint8_t> newBits) {
-  CHECK(newBits.size() <= std::numeric_limits<uint16_t>::max());
-  bits_ = std::move(newBits);
-}
-
-std::string ResumeIdentificationToken::str() const {
-  std::stringstream out;
-  out << *this;
-  return out.str();
-}
-
-std::ostream& operator<<(
-    std::ostream& out,
-    const ResumeIdentificationToken& token) {
-  out << "0x";
-  for (auto b : token.data()) {
-    out << HEX_CHARS[(b & 0xF0) >> 4];
-    out << HEX_CHARS[b & 0x0F];
-  }
-  return out;
-}
-
 std::string hexDump(folly::StringPiece s) {
-  return folly::hexDump(s.data(), s.size());
+  return folly::hexDump(s.data(), std::min<size_t>(0xFF, s.size()));
 }
-} // reactivesocket
+} // namespace rsocket

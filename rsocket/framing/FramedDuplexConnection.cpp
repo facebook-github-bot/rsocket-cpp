@@ -1,16 +1,23 @@
-// Copyright 2004-present Facebook. All Rights Reserved.
+// Copyright (c) Facebook, Inc. and its affiliates.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #include "rsocket/framing/FramedDuplexConnection.h"
-
 #include <folly/io/Cursor.h>
-
-#include "rsocket/framing/FrameSerializer.h"
 #include "rsocket/framing/FrameSerializer_v1_0.h"
 #include "rsocket/framing/FramedReader.h"
 
 namespace rsocket {
-
-using namespace yarpl::flowable;
 
 namespace {
 
@@ -29,7 +36,7 @@ void writeFrameLength(
   auto shift = (frameSizeFieldLength - 1) * 8;
 
   while (frameSizeFieldLength--) {
-    auto byte = (frameLength >> shift) & 0xFF;
+    const auto byte = (frameLength >> shift) & 0xFF;
     cur.write(static_cast<uint8_t>(byte));
     shift -= 8;
   }
@@ -44,27 +51,17 @@ size_t getFrameSizeFieldLength(ProtocolVersion version) {
   }
 }
 
-size_t getPayloadLength(ProtocolVersion version, size_t payloadLength) {
-  DCHECK(version != ProtocolVersion::Unknown);
-  if (version < FrameSerializerV1_0::Version) {
-    return payloadLength + getFrameSizeFieldLength(version);
-  } else {
-    return payloadLength;
-  }
-}
-
 std::unique_ptr<folly::IOBuf> prependSize(
     ProtocolVersion version,
     std::unique_ptr<folly::IOBuf> payload) {
   CHECK(payload);
 
   const auto frameSizeFieldLength = getFrameSizeFieldLength(version);
-  // the frame size includes the payload size and the size value
-  auto payloadLength =
-      getPayloadLength(version, payload->computeChainDataLength());
-  if (payloadLength > kMaxFrameLength) {
-    return nullptr;
-  }
+  const auto payloadLength = payload->computeChainDataLength();
+
+  CHECK_LE(payloadLength, kMaxFrameLength)
+      << "payloadLength: " << payloadLength
+      << " kMaxFrameLength: " << kMaxFrameLength;
 
   if (payload->headroom() >= frameSizeFieldLength) {
     // move the data pointer back and write value to the payload
@@ -102,20 +99,13 @@ void FramedDuplexConnection::send(std::unique_ptr<folly::IOBuf> buf) {
   }
 
   auto sized = prependSize(*protocolVersion_, std::move(buf));
-  if (!sized) {
-    protocolVersion_.reset();
-    inputReader_.reset();
-    inner_.reset();
-    return;
-  }
-
   inner_->send(std::move(sized));
 }
 
 void FramedDuplexConnection::setInput(
-    yarpl::Reference<DuplexConnection::Subscriber> framesSink) {
+    std::shared_ptr<DuplexConnection::Subscriber> framesSink) {
   if (!inputReader_) {
-    inputReader_ = yarpl::make_ref<FramedReader>(protocolVersion_);
+    inputReader_ = std::make_shared<FramedReader>(protocolVersion_);
     inner_->setInput(inputReader_);
   }
   inputReader_->setInput(std::move(framesSink));

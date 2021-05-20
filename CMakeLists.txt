@@ -1,23 +1,21 @@
 cmake_minimum_required(VERSION 3.2)
 
-# The RSOCKET_CC CMake variable specifies the C compiler, e.g. gcc-4.9.
-# The C++ compiler name is obtained by replacing "gcc" with "g++" and "clang"
-# with "clang++"". If RSOCKET_CC is not given, the compiler is detected
-# automatically.
-if (RSOCKET_CC)
-  set(ENV{CC} ${RSOCKET_CC})
-  if (${RSOCKET_CC} MATCHES clang)
-    string(REPLACE clang clang++ CXX ${RSOCKET_CC})
-  else ()
-    string(REPLACE gcc g++ CXX ${RSOCKET_CC})
-  endif ()
-  set(ENV{CXX} ${CXX})
-endif ()
-
 project(ReactiveSocket)
 
+if (NOT DEFINED CPACK_GENERATOR)
+  set(CPACK_GENERATOR "RPM")
+endif()
+include(CPack)
+
 # CMake modules.
-set(CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake/")
+set(CMAKE_MODULE_PATH
+  "${CMAKE_SOURCE_DIR}/cmake/"
+  # For in-fbsource builds
+  "${CMAKE_CURRENT_SOURCE_DIR}/../opensource/fbcode_builder/CMake"
+  # For shipit-transformed builds
+  "${CMAKE_CURRENT_SOURCE_DIR}/build/fbcode_builder/CMake"
+  ${CMAKE_MODULE_PATH}
+)
 
 # Joins arguments and stores the result in ${var}.
 function(join var)
@@ -128,6 +126,8 @@ if (DEFINED ASAN_FLAGS)
 endif ()
 
 option(BUILD_BENCHMARKS "Build benchmarks" ON)
+option(BUILD_EXAMPLES "Build examples" ON)
+option(BUILD_TESTS "Build tests" ON)
 
 enable_testing()
 
@@ -136,31 +136,44 @@ include(CTest)
 
 include(${CMAKE_SOURCE_DIR}/cmake/InstallFolly.cmake)
 
-# gmock
-ExternalProject_Add(
-  gmock
-  URL ${CMAKE_CURRENT_SOURCE_DIR}/googletest-release-1.8.0.zip
-  INSTALL_COMMAND ""
-)
-
-ExternalProject_Get_Property(gmock source_dir)
-set(GMOCK_SOURCE_DIR ${source_dir})
-ExternalProject_Get_Property(gmock binary_dir)
-set(GMOCK_BINARY_DIR ${binary_dir})
-
-set(GMOCK_LIBS
-  ${GMOCK_BINARY_DIR}/${CMAKE_CFG_INTDIR}/googlemock/${CMAKE_STATIC_LIBRARY_PREFIX}gmock${CMAKE_STATIC_LIBRARY_SUFFIX}
-  ${GMOCK_BINARY_DIR}/${CMAKE_CFG_INTDIR}/googlemock/${CMAKE_STATIC_LIBRARY_PREFIX}gmock_main${CMAKE_STATIC_LIBRARY_SUFFIX}
+if(BUILD_TESTS)
+  # gmock
+  ExternalProject_Add(
+    gmock
+    URL ${CMAKE_CURRENT_SOURCE_DIR}/googletest-release-1.8.0.zip
+    INSTALL_COMMAND ""
   )
+
+  ExternalProject_Get_Property(gmock source_dir)
+  set(GMOCK_SOURCE_DIR ${source_dir})
+  ExternalProject_Get_Property(gmock binary_dir)
+  set(GMOCK_BINARY_DIR ${binary_dir})
+
+  set(GMOCK_LIBS
+    ${GMOCK_BINARY_DIR}/${CMAKE_CFG_INTDIR}/googlemock/${CMAKE_STATIC_LIBRARY_PREFIX}gmock${CMAKE_STATIC_LIBRARY_SUFFIX}
+    ${GMOCK_BINARY_DIR}/${CMAKE_CFG_INTDIR}/googlemock/${CMAKE_STATIC_LIBRARY_PREFIX}gmock_main${CMAKE_STATIC_LIBRARY_SUFFIX}
+  )
+
+  include_directories(${GMOCK_SOURCE_DIR}/googlemock/include)
+  include_directories(${GMOCK_SOURCE_DIR}/googletest/include)
+
+endif()
 
 set(CMAKE_CXX_STANDARD 14)
 
-# Common configuration for all build modes.
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra -pedantic")
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Woverloaded-virtual")
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -g")
+include(CheckCXXCompilerFlag)
 
-set(EXTRA_CXX_FLAGS ${EXTRA_CXX_FLAGS} -Werror)
+# Common configuration for all build modes.
+if (NOT MSVC)
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra")
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Woverloaded-virtual")
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -g")
+endif()
+
+CHECK_CXX_COMPILER_FLAG(-Wnoexcept-type COMPILER_HAS_W_NOEXCEPT_TYPE)
+if (COMPILER_HAS_W_NOEXCEPT_TYPE)
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-noexcept-type")
+endif()
 
 if("${BUILD_TYPE_LOWER}" MATCHES "debug")
   message("debug mode was set")
@@ -177,26 +190,16 @@ find_library(DOUBLE-CONVERSION double-conversion)
 
 find_package(OpenSSL REQUIRED)
 
-# Find glog and gflags libraries specifically
-find_path(GLOG_INCLUDE_DIR glog/logging.h)
-find_path(GFLAGS_INCLUDE_DIR gflags/gflags.h)
+find_package(Gflags REQUIRED)
 
-find_library(GLOG_LIBRARY glog)
-find_library(GFLAGS_LIBRARY gflags)
+# find glog::glog to satisfy the folly dep.
+find_package(Glog REQUIRED)
 
-message("gflags include_dir <${GFLAGS_INCLUDE_DIR}> lib <${GFLAGS_LIBRARY}>")
-message("glog include_dir <${GLOG_INCLUDE_DIR}> lib <${GLOG_LIBRARY}>")
+find_package(fmt CONFIG REQUIRED)
 
 include_directories(SYSTEM ${OPENSSL_INCLUDE_DIR})
 
 include_directories(SYSTEM ${GFLAGS_INCLUDE_DIR})
-include_directories(SYSTEM ${GLOG_INCLUDE_DIR})
-
-include_directories(${CMAKE_SOURCE_DIR})
-
-include_directories(${CMAKE_CURRENT_BINARY_DIR}/reactivestreams/include)
-include_directories(${GMOCK_SOURCE_DIR}/googlemock/include)
-include_directories(${GMOCK_SOURCE_DIR}/googletest/include)
 
 add_subdirectory(yarpl)
 
@@ -240,10 +243,6 @@ add_library(
   rsocket/framing/FrameProcessor.h
   rsocket/framing/FrameSerializer.cpp
   rsocket/framing/FrameSerializer.h
-  rsocket/framing/FrameSerializer_v0.cpp
-  rsocket/framing/FrameSerializer_v0.h
-  rsocket/framing/FrameSerializer_v0_1.cpp
-  rsocket/framing/FrameSerializer_v0_1.h
   rsocket/framing/FrameSerializer_v1_0.cpp
   rsocket/framing/FrameSerializer_v1_0.h
   rsocket/framing/FrameTransport.h
@@ -255,8 +254,10 @@ add_library(
   rsocket/framing/FramedDuplexConnection.h
   rsocket/framing/FramedReader.cpp
   rsocket/framing/FramedReader.h
-  rsocket/framing/FramedWriter.cpp
-  rsocket/framing/FramedWriter.h
+  rsocket/framing/ProtocolVersion.cpp
+  rsocket/framing/ProtocolVersion.h
+  rsocket/framing/ResumeIdentificationToken.cpp
+  rsocket/framing/ResumeIdentificationToken.h
   rsocket/framing/ScheduledFrameProcessor.cpp
   rsocket/framing/ScheduledFrameProcessor.h
   rsocket/framing/ScheduledFrameTransport.cpp
@@ -288,6 +289,8 @@ add_library(
   rsocket/statemachine/ChannelResponder.h
   rsocket/statemachine/ConsumerBase.cpp
   rsocket/statemachine/ConsumerBase.h
+  rsocket/statemachine/FireAndForgetResponder.cpp
+  rsocket/statemachine/FireAndForgetResponder.h
   rsocket/statemachine/PublisherBase.cpp
   rsocket/statemachine/PublisherBase.h
   rsocket/statemachine/RSocketStateMachine.cpp
@@ -300,13 +303,12 @@ add_library(
   rsocket/statemachine/StreamRequester.h
   rsocket/statemachine/StreamResponder.cpp
   rsocket/statemachine/StreamResponder.h
-  rsocket/statemachine/StreamState.cpp
-  rsocket/statemachine/StreamState.h
   rsocket/statemachine/StreamStateMachineBase.cpp
   rsocket/statemachine/StreamStateMachineBase.h
-  rsocket/statemachine/StreamsFactory.cpp
-  rsocket/statemachine/StreamsFactory.h
+  rsocket/statemachine/StreamFragmentAccumulator.cpp
+  rsocket/statemachine/StreamFragmentAccumulator.h
   rsocket/statemachine/StreamsWriter.h
+  rsocket/statemachine/StreamsWriter.cpp
   rsocket/transports/tcp/TcpConnectionAcceptor.cpp
   rsocket/transports/tcp/TcpConnectionAcceptor.h
   rsocket/transports/tcp/TcpConnectionFactory.cpp
@@ -314,10 +316,17 @@ add_library(
   rsocket/transports/tcp/TcpDuplexConnection.cpp
   rsocket/transports/tcp/TcpDuplexConnection.h)
 
-target_include_directories(ReactiveSocket PUBLIC "${PROJECT_SOURCE_DIR}/yarpl/include")
-target_include_directories(ReactiveSocket PUBLIC "${PROJECT_SOURCE_DIR}/yarpl/src")
+target_include_directories(
+    ReactiveSocket
+    PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
+        $<INSTALL_INTERFACE:include>
+)
 
-target_link_libraries(ReactiveSocket yarpl ${GFLAGS_LIBRARY} ${GLOG_LIBRARY})
+
+target_link_libraries(ReactiveSocket
+    PUBLIC yarpl glog::glog gflags
+    INTERFACE ${EXTRA_LINK_FLAGS})
 
 target_compile_options(
   ReactiveSocket
@@ -325,62 +334,72 @@ target_compile_options(
 
 enable_testing()
 
-install(TARGETS ReactiveSocket DESTINATION lib)
+install(TARGETS ReactiveSocket EXPORT rsocket-exports DESTINATION lib)
 install(DIRECTORY rsocket DESTINATION include FILES_MATCHING PATTERN "*.h")
+install(EXPORT rsocket-exports NAMESPACE rsocket:: DESTINATION lib/cmake/rsocket)
+include(CMakePackageConfigHelpers)
+configure_package_config_file(
+    cmake/rsocket-config.cmake.in
+    rsocket-config.cmake
+    INSTALL_DESTINATION lib/cmake/rsocket
+)
+install(
+    FILES ${CMAKE_CURRENT_BINARY_DIR}/rsocket-config.cmake
+    DESTINATION lib/cmake/rsocket
+)
 
-# CMake doesn't seem to support "transitive" installing, and I can't access the
-# "yarpl" target from this file, so just grab the library file directly.
-install(FILES "${CMAKE_CURRENT_BINARY_DIR}/yarpl/libyarpl.a" DESTINATION lib)
-install(DIRECTORY yarpl/include/yarpl DESTINATION include FILES_MATCHING PATTERN "*.h")
-
+if(BUILD_TESTS)
 add_executable(
   tests
-  test/ColdResumptionTest.cpp
-  test/ConnectionEventsTest.cpp
-  test/PayloadTest.cpp
-  test/RSocketClientServerTest.cpp
-  test/RSocketClientTest.cpp
-  test/RSocketTests.cpp
-  test/RSocketTests.h
-  test/RequestChannelTest.cpp
-  test/RequestResponseTest.cpp
-  test/RequestStreamTest.cpp
-  test/RequestStreamTest_concurrency.cpp
-  test/Test.cpp
-  test/WarmResumeManagerTest.cpp
-  test/WarmResumptionTest.cpp
-  test/framing/FrameTest.cpp
-  test/framing/FrameTransportTest.cpp
-  test/framing/FramedReaderTest.cpp
-  test/handlers/HelloServiceHandler.cpp
-  test/handlers/HelloServiceHandler.h
-  test/handlers/HelloStreamRequestHandler.cpp
-  test/handlers/HelloStreamRequestHandler.h
-  test/internal/AllowanceTest.cpp
-  test/internal/ConnectionSetTest.cpp
-  test/internal/KeepaliveTimerTest.cpp
-  test/internal/ResumeIdentificationToken.cpp
-  test/internal/SetupResumeAcceptorTest.cpp
-  test/internal/SwappableEventBaseTest.cpp
-  test/test_utils/ColdResumeManager.cpp
-  test/test_utils/ColdResumeManager.h
-  test/test_utils/GenericRequestResponseHandler.h
-  test/test_utils/MockDuplexConnection.h
-  test/test_utils/MockKeepaliveTimer.h
-  test/test_utils/MockRequestHandler.h
-  test/test_utils/MockStats.h
-  test/transport/DuplexConnectionTest.cpp
-  test/transport/DuplexConnectionTest.h
-  test/transport/TcpDuplexConnectionTest.cpp)
+  rsocket/test/ColdResumptionTest.cpp
+  rsocket/test/ConnectionEventsTest.cpp
+  rsocket/test/PayloadTest.cpp
+  rsocket/test/RSocketClientServerTest.cpp
+  rsocket/test/RSocketClientTest.cpp
+  rsocket/test/RSocketTests.cpp
+  rsocket/test/RSocketTests.h
+  rsocket/test/RequestChannelTest.cpp
+  rsocket/test/RequestResponseTest.cpp
+  rsocket/test/RequestStreamTest.cpp
+  rsocket/test/RequestStreamTest_concurrency.cpp
+  rsocket/test/Test.cpp
+  rsocket/test/WarmResumeManagerTest.cpp
+  rsocket/test/WarmResumptionTest.cpp
+  rsocket/test/framing/FrameTest.cpp
+  rsocket/test/framing/FrameTransportTest.cpp
+  rsocket/test/framing/FramedReaderTest.cpp
+  rsocket/test/handlers/HelloServiceHandler.cpp
+  rsocket/test/handlers/HelloServiceHandler.h
+  rsocket/test/handlers/HelloStreamRequestHandler.cpp
+  rsocket/test/handlers/HelloStreamRequestHandler.h
+  rsocket/test/internal/AllowanceTest.cpp
+  rsocket/test/internal/ConnectionSetTest.cpp
+  rsocket/test/internal/KeepaliveTimerTest.cpp
+  rsocket/test/internal/ResumeIdentificationToken.cpp
+  rsocket/test/internal/SetupResumeAcceptorTest.cpp
+  rsocket/test/internal/SwappableEventBaseTest.cpp
+  rsocket/test/statemachine/RSocketStateMachineTest.cpp
+  rsocket/test/statemachine/StreamStateTest.cpp
+  rsocket/test/statemachine/StreamsWriterTest.cpp
+  rsocket/test/test_utils/ColdResumeManager.cpp
+  rsocket/test/test_utils/ColdResumeManager.h
+  rsocket/test/test_utils/GenericRequestResponseHandler.h
+  rsocket/test/test_utils/MockDuplexConnection.h
+  rsocket/test/test_utils/MockStreamsWriter.h
+  rsocket/test/test_utils/MockStats.h
+  rsocket/test/transport/DuplexConnectionTest.cpp
+  rsocket/test/transport/DuplexConnectionTest.h
+  rsocket/test/transport/TcpDuplexConnectionTest.cpp)
 
+add_dependencies(tests gmock)
 target_link_libraries(
   tests
   ReactiveSocket
   yarpl
   yarpl-test-utils
-  ${GMOCK_LIBS}
-  ${GFLAGS_LIBRARY}
-  ${GLOG_LIBRARY})
+  ${GMOCK_LIBS}  # This also needs the preceding `add_dependencies`
+  glog::glog
+  gflags)
 
 target_include_directories(tests PUBLIC "${PROJECT_SOURCE_DIR}/yarpl/test/")
 target_compile_options(
@@ -390,19 +409,18 @@ target_compile_options(
 add_dependencies(tests gmock yarpl-test-utils ReactiveSocket)
 
 add_test(NAME RSocketTests COMMAND tests)
-add_test(NAME RSocketTests-0.1 COMMAND tests --rs_use_protocol_version=0.1)
 
 ### Fuzzer harnesses
 add_executable(
   frame_fuzzer
-  test/fuzzers/frame_fuzzer.cpp)
+  rsocket/test/fuzzers/frame_fuzzer.cpp)
 
 target_link_libraries(
   frame_fuzzer
   ReactiveSocket
   yarpl
-  ${GFLAGS_LIBRARY}
-  ${GLOG_LIBRARY})
+  glog::glog
+  gflags)
 
 add_dependencies(frame_fuzzer gmock ReactiveSocket)
 
@@ -410,84 +428,91 @@ add_test(
   NAME FrameFuzzerTests
   COMMAND ./scripts/frame_fuzzer_test.sh
   WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+endif()
 
 ########################################
 # TCK Drivers
 ########################################
 
-add_executable(
-  tckclient
-  tck-test/client.cpp
-  tck-test/TestFileParser.cpp
-  tck-test/TestFileParser.h
-  tck-test/FlowableSubscriber.cpp
-  tck-test/FlowableSubscriber.h
-  tck-test/SingleSubscriber.cpp
-  tck-test/SingleSubscriber.h
-  tck-test/TestSuite.cpp
-  tck-test/TestSuite.h
-  tck-test/TestInterpreter.cpp
-  tck-test/TestInterpreter.h
-  tck-test/TypedCommands.h
-  tck-test/BaseSubscriber.cpp
-  tck-test/BaseSubscriber.h)
+if(BUILD_TESTS)
+  add_executable(
+    tckclient
+    rsocket/tck-test/client.cpp
+    rsocket/tck-test/TestFileParser.cpp
+    rsocket/tck-test/TestFileParser.h
+    rsocket/tck-test/FlowableSubscriber.cpp
+    rsocket/tck-test/FlowableSubscriber.h
+    rsocket/tck-test/SingleSubscriber.cpp
+    rsocket/tck-test/SingleSubscriber.h
+    rsocket/tck-test/TestSuite.cpp
+    rsocket/tck-test/TestSuite.h
+    rsocket/tck-test/TestInterpreter.cpp
+    rsocket/tck-test/TestInterpreter.h
+    rsocket/tck-test/TypedCommands.h
+    rsocket/tck-test/BaseSubscriber.cpp
+    rsocket/tck-test/BaseSubscriber.h)
 
-target_link_libraries(
-  tckclient
-  ReactiveSocket
-  yarpl
-  ${GFLAGS_LIBRARY}
-  ${GLOG_LIBRARY})
+  target_link_libraries(
+    tckclient
+    ReactiveSocket
+    yarpl
+    glog::glog
+    gflags)
 
-add_executable(
-  tckserver
-  tck-test/server.cpp
-  tck-test/MarbleProcessor.cpp
-  tck-test/MarbleProcessor.h
-  test/test_utils/StatsPrinter.cpp
-  test/test_utils/StatsPrinter.h)
+  add_executable(
+    tckserver
+    rsocket/tck-test/server.cpp
+    rsocket/tck-test/MarbleProcessor.cpp
+    rsocket/tck-test/MarbleProcessor.h
+    rsocket/test/test_utils/StatsPrinter.cpp
+    rsocket/test/test_utils/StatsPrinter.h)
 
-target_link_libraries(
-  tckserver
-  ReactiveSocket
-  yarpl
-  ${GFLAGS_LIBRARY}
-  ${GMOCK_LIBS}
-  ${GLOG_LIBRARY}
-  ${DOUBLE-CONVERSION})
+  add_dependencies(tckserver gmock)
+  target_link_libraries(
+    tckserver
+    ReactiveSocket
+    yarpl
+    ${GMOCK_LIBS}  # This also needs the preceding `add_dependencies`
+    glog::glog
+    gflags
+    ${DOUBLE-CONVERSION})
 
 # Download the latest TCK drivers JAR.
-set(TCK_DRIVERS_JAR rsocket-tck-drivers-0.9.10.jar)
-join(TCK_DRIVERS_URL
-  "https://oss.jfrog.org/libs-release/io/rsocket/"
-  "rsocket-tck-drivers/0.9.10/${TCK_DRIVERS_JAR}")
-message(STATUS "Downloading ${TCK_DRIVERS_URL}")
-file(DOWNLOAD ${TCK_DRIVERS_URL} ${CMAKE_SOURCE_DIR}/${TCK_DRIVERS_JAR})
+  set(TCK_DRIVERS_JAR rsocket-tck-drivers-0.9.10.jar)
+  if (NOT EXISTS ${CMAKE_SOURCE_DIR}/${TCK_DRIVERS_JAR})
+    join(TCK_DRIVERS_URL
+      "https://oss.jfrog.org/libs-release/io/rsocket/"
+      "rsocket-tck-drivers/0.9.10/${TCK_DRIVERS_JAR}")
+    message(STATUS "Downloading ${TCK_DRIVERS_URL}")
+    file(DOWNLOAD ${TCK_DRIVERS_URL} ${CMAKE_SOURCE_DIR}/${TCK_DRIVERS_JAR})
+  endif ()
+endif()
 
 ########################################
 # Examples
 ########################################
 
+if (BUILD_EXAMPLES)
 add_library(
   reactivesocket_examples_util
-  examples/util/ExampleSubscriber.cpp
-  examples/util/ExampleSubscriber.h
-  test/test_utils/ColdResumeManager.h
-  test/test_utils/ColdResumeManager.cpp
+  rsocket/examples/util/ExampleSubscriber.cpp
+  rsocket/examples/util/ExampleSubscriber.h
+  rsocket/test/test_utils/ColdResumeManager.h
+  rsocket/test/test_utils/ColdResumeManager.cpp
 )
 
 target_link_libraries(
   reactivesocket_examples_util
   yarpl
   ReactiveSocket
-  ${GFLAGS_LIBRARY}
-  ${GLOG_LIBRARY})
+  glog::glog
+  gflags)
 
 # request-response-hello-world
 
 add_executable(
   example_request-response-hello-world-server
-  examples/request-response-hello-world/RequestResponseHelloWorld_Server.cpp
+  rsocket/examples/request-response-hello-world/RequestResponseHelloWorld_Server.cpp
 )
 
 target_link_libraries(
@@ -495,12 +520,12 @@ target_link_libraries(
   ReactiveSocket
   reactivesocket_examples_util
   yarpl
-  ${GFLAGS_LIBRARY}
-  ${GLOG_LIBRARY})
+  glog::glog
+  gflags)
 
 add_executable(
   example_request-response-hello-world-client
-  examples/request-response-hello-world/RequestResponseHelloWorld_Client.cpp
+  rsocket/examples/request-response-hello-world/RequestResponseHelloWorld_Client.cpp
 )
 
 target_link_libraries(
@@ -508,14 +533,14 @@ target_link_libraries(
   ReactiveSocket
   reactivesocket_examples_util
   yarpl
-  ${GFLAGS_LIBRARY}
-  ${GLOG_LIBRARY})
+  glog::glog
+  gflags)
 
 # fire-and-forget-hello-world
 
 add_executable(
   example_fire-and-forget-hello-world-server
-  examples/fire-and-forget-hello-world/FireAndForgetHelloWorld_Server.cpp
+  rsocket/examples/fire-and-forget-hello-world/FireAndForgetHelloWorld_Server.cpp
 )
 
 target_link_libraries(
@@ -523,12 +548,12 @@ target_link_libraries(
   ReactiveSocket
   reactivesocket_examples_util
   yarpl
-  ${GFLAGS_LIBRARY}
-  ${GLOG_LIBRARY})
+  glog::glog
+  gflags)
 
 add_executable(
   example_fire-and-forget-hello-world-client
-  examples/fire-and-forget-hello-world/FireAndForgetHelloWorld_Client.cpp
+  rsocket/examples/fire-and-forget-hello-world/FireAndForgetHelloWorld_Client.cpp
 )
 
 target_link_libraries(
@@ -536,15 +561,15 @@ target_link_libraries(
   ReactiveSocket
   reactivesocket_examples_util
   yarpl
-  ${GFLAGS_LIBRARY}
-  ${GLOG_LIBRARY})
+  glog::glog
+  gflags)
 
 
 # stream-hello-world
 
 add_executable(
   example_stream-hello-world-server
-  examples/stream-hello-world/StreamHelloWorld_Server.cpp
+  rsocket/examples/stream-hello-world/StreamHelloWorld_Server.cpp
 )
 
 target_link_libraries(
@@ -552,12 +577,12 @@ target_link_libraries(
   ReactiveSocket
   reactivesocket_examples_util
   yarpl
-  ${GFLAGS_LIBRARY}
-  ${GLOG_LIBRARY})
+  glog::glog
+  gflags)
 
 add_executable(
   example_stream-hello-world-client
-  examples/stream-hello-world/StreamHelloWorld_Client.cpp
+  rsocket/examples/stream-hello-world/StreamHelloWorld_Client.cpp
 )
 
 target_link_libraries(
@@ -565,14 +590,14 @@ target_link_libraries(
   ReactiveSocket
   reactivesocket_examples_util
   yarpl
-  ${GFLAGS_LIBRARY}
-  ${GLOG_LIBRARY})
+  glog::glog
+  gflags)
 
 # channel-hello-world
 
 add_executable(
   example_channel-hello-world-server
-  examples/channel-hello-world/ChannelHelloWorld_Server.cpp
+  rsocket/examples/channel-hello-world/ChannelHelloWorld_Server.cpp
 )
 
 target_link_libraries(
@@ -580,12 +605,14 @@ target_link_libraries(
   ReactiveSocket
   reactivesocket_examples_util
   yarpl
-  ${GFLAGS_LIBRARY}
-  ${GLOG_LIBRARY})
+  glog::glog
+  gflags)
+
+
 
 add_executable(
   example_channel-hello-world-client
-  examples/channel-hello-world/ChannelHelloWorld_Client.cpp
+  rsocket/examples/channel-hello-world/ChannelHelloWorld_Client.cpp
 )
 
 target_link_libraries(
@@ -593,14 +620,14 @@ target_link_libraries(
   ReactiveSocket
   reactivesocket_examples_util
   yarpl
-  ${GFLAGS_LIBRARY}
-  ${GLOG_LIBRARY})
+  glog::glog
+  gflags)
 
 # stream-observable-to-flowable
 
 add_executable(
   example_observable-to-flowable-server
-  examples/stream-observable-to-flowable/StreamObservableToFlowable_Server.cpp
+  rsocket/examples/stream-observable-to-flowable/StreamObservableToFlowable_Server.cpp
 )
 
 target_link_libraries(
@@ -608,12 +635,12 @@ target_link_libraries(
   ReactiveSocket
   reactivesocket_examples_util
   yarpl
-  ${GFLAGS_LIBRARY}
-  ${GLOG_LIBRARY})
+  glog::glog
+  gflags)
 
 add_executable(
   example_observable-to-flowable-client
-  examples/stream-observable-to-flowable/StreamObservableToFlowable_Client.cpp
+  rsocket/examples/stream-observable-to-flowable/StreamObservableToFlowable_Client.cpp
 )
 
 target_link_libraries(
@@ -621,18 +648,18 @@ target_link_libraries(
   ReactiveSocket
   reactivesocket_examples_util
   yarpl
-  ${GFLAGS_LIBRARY}
-  ${GLOG_LIBRARY})
+  glog::glog
+  gflags)
 
 # conditional-request-handling
 
 add_executable(
   example_conditional-request-handling-server
-  examples/conditional-request-handling/ConditionalRequestHandling_Server.cpp
-  examples/conditional-request-handling/TextRequestHandler.h
-  examples/conditional-request-handling/TextRequestHandler.cpp
-  examples/conditional-request-handling/JsonRequestHandler.cpp
-  examples/conditional-request-handling/JsonRequestHandler.h
+  rsocket/examples/conditional-request-handling/ConditionalRequestHandling_Server.cpp
+  rsocket/examples/conditional-request-handling/TextRequestHandler.h
+  rsocket/examples/conditional-request-handling/TextRequestHandler.cpp
+  rsocket/examples/conditional-request-handling/JsonRequestHandler.cpp
+  rsocket/examples/conditional-request-handling/JsonRequestHandler.h
 )
 
 target_link_libraries(
@@ -640,12 +667,12 @@ target_link_libraries(
   ReactiveSocket
   reactivesocket_examples_util
   yarpl
-  ${GFLAGS_LIBRARY}
-  ${GLOG_LIBRARY})
+  glog::glog
+  gflags)
 
 add_executable(
   example_conditional-request-handling-client
-  examples/conditional-request-handling/ConditionalRequestHandling_Client.cpp
+  rsocket/examples/conditional-request-handling/ConditionalRequestHandling_Client.cpp
 )
 
 target_link_libraries(
@@ -653,14 +680,14 @@ target_link_libraries(
   ReactiveSocket
   reactivesocket_examples_util
   yarpl
-  ${GFLAGS_LIBRARY}
-  ${GLOG_LIBRARY})
+  glog::glog
+  gflags)
 
 # warm-resumption
 
 add_executable(
   example_resumption-server
-  examples/resumption/Resumption_Server.cpp
+  rsocket/examples/resumption/Resumption_Server.cpp
 )
 
 target_link_libraries(
@@ -668,12 +695,12 @@ target_link_libraries(
   ReactiveSocket
   reactivesocket_examples_util
   yarpl
-  ${GFLAGS_LIBRARY}
-  ${GLOG_LIBRARY})
+  glog::glog
+  gflags)
 
 add_executable(
   example_warm-resumption-client
-  examples/resumption/WarmResumption_Client.cpp
+  rsocket/examples/resumption/WarmResumption_Client.cpp
 )
 
 target_link_libraries(
@@ -681,12 +708,12 @@ target_link_libraries(
   ReactiveSocket
   reactivesocket_examples_util
   yarpl
-  ${GFLAGS_LIBRARY}
-  ${GLOG_LIBRARY})
+  glog::glog
+  gflags)
 
 add_executable(
   example_cold-resumption-client
-  examples/resumption/ColdResumption_Client.cpp
+  rsocket/examples/resumption/ColdResumption_Client.cpp
 )
 
 target_link_libraries(
@@ -694,13 +721,15 @@ target_link_libraries(
   ReactiveSocket
   reactivesocket_examples_util
   yarpl
-  ${GFLAGS_LIBRARY}
-  ${GLOG_LIBRARY})
+  glog::glog
+  gflags)
+
+endif () # BUILD_EXAMPLES
 
 ########################################
 # End Examples
 ########################################
 
 if (BUILD_BENCHMARKS)
-  add_subdirectory(benchmarks)
+  add_subdirectory(rsocket/benchmarks)
 endif ()
